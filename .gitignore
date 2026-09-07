@@ -1,0 +1,7 @@
+/bin/
+*.exe
+*.out
+.env
+.terraform/
+*.tfstate
+*.tfstate.*
