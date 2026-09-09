@@ -420,3 +420,25 @@ type osDirFS struct{}
 func (osDirFS) Open(name string) (fs.File, error) {
 	return nil, fmt.Errorf("not implemented: %s", name)
 }
+
+func ReadLockedVersion(root string) (map[string]string, error) {
+	absoluteRoot, err := filepath.Abs(root)
+
+	if err != nil {
+		return nil, fmt.Errorf("resolve project path: %w", err)
+	}
+
+	lockedProviders, err := scanLockFile(filepath.Join(absoluteRoot, ".terraform.lock.hcl"))
+
+	if err != nil {
+		return nil, err
+	}
+
+	versions := make(map[string]string)
+
+	for _, provider := range lockedProviders {
+		versions[provider.Source] = provider.Version
+	}
+
+	return versions, nil
+}

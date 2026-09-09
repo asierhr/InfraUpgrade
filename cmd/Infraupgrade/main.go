@@ -129,9 +129,11 @@ func main() {
 			os.Exit(1)
 		}
 
-		printUpgradeReport(scanResult, updates, report)
+		versionChecks := upgrade.VerifyProviderVersions(report, providerTargets(updates))
 
-		if !report.Succeeded() {
+		printUpgradeReport(scanResult, updates, report, versionChecks)
+
+		if !report.Succeeded() || !upgrade.AllVersionsCheckPassed(versionChecks) {
 			os.Exit(2)
 		}
 
@@ -323,7 +325,23 @@ func filterAvailableUpdates(candidates []registry.UpgradeCandidate) []registry.U
 	return updates
 }
 
-func printUpgradeReport(scanResult scanner.Result, candidates []registry.UpgradeCandidate, report upgrade.Report) {
+func providerTargets(candidates []registry.UpgradeCandidate) []upgrade.ProviderTarget {
+	targets := make([]upgrade.ProviderTarget, 0, len(candidates))
+
+	for _, candidate := range candidates {
+		targets = append(targets, upgrade.ProviderTarget{
+			Name:           candidate.Provider,
+			Source:         candidate.Source,
+			CurrentVersion: candidate.CurrentVersion,
+			TargetVersion:  candidate.TargetVersion,
+		})
+	}
+
+	return targets
+}
+
+func printUpgradeReport(scanResult scanner.Result, candidates []registry.UpgradeCandidate, report upgrade.Report, versionChecks []upgrade.ProviderVersionCheck) {
+
 	fmt.Printf("Project: %s\n", filepath.Clean(scanResult.Root))
 
 	fmt.Println("Upgrade simulation:")
@@ -352,7 +370,35 @@ func printUpgradeReport(scanResult scanner.Result, candidates []registry.Upgrade
 
 	fmt.Printf("\nDry-run succeeded: %t\n", report.Succeeded())
 
-	fmt.Println("Original project modified: false")
+	fmt.Println("\nSelected provider versions:")
+
+	for _, check := range versionChecks {
+		status := "passed"
+
+		if !check.Passed() {
+			status = "failed"
+		}
+
+		fmt.Printf("\n  %s (%s):\n", check.Name, check.Source)
+
+		if check.BaselineFound {
+			fmt.Printf("    Baseline expected: %s\n", check.ExpectedBaseline)
+
+			fmt.Printf("    Baseline selected: %s\n", check.ActualBaseline)
+		} else {
+			fmt.Println("    Baseline selected: not found")
+		}
+
+		if check.UpgradeFound {
+			fmt.Printf("    Upgrade expected:  %s\n", check.ExpectedUpgrade)
+
+			fmt.Printf("    Upgrade selected:  %s\n", check.ActualUpgrade)
+		} else {
+			fmt.Println("    Upgrade selected: not found")
+		}
+
+		fmt.Printf("    Verification: %s\n", status)
+	}
 }
 
 func printExecutionReport(execution upgrade.ExecutionReport) {

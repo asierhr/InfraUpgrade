@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/asierhr/infraupgrade/internal/scanner"
 )
 
 type StepResult struct {
@@ -16,11 +18,12 @@ type StepResult struct {
 }
 
 type ExecutionReport struct {
-	Name            string
-	Steps           []StepResult
-	Plan            PlanSummary
-	PlanAvailable   bool
-	LockFileChanged bool
+	Name             string
+	Steps            []StepResult
+	Plan             PlanSummary
+	PlanAvailable    bool
+	LockFileChanged  bool
+	SelectedVersions map[string]string
 }
 
 type Report struct {
@@ -241,6 +244,14 @@ func executeWorkspace(ctx context.Context, name string, workspace string, origin
 	}
 
 	execution.LockFileChanged = !bytes.Equal(originalLock, updatedLock)
+
+	selectedVersions, err := scanner.ReadLockedVersion(workspace)
+
+	if err != nil {
+		return execution, fmt.Errorf("read %s selected provider versions: %w", name, err)
+	}
+
+	execution.SelectedVersions = selectedVersions
 
 	return execution, nil
 }
