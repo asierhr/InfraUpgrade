@@ -3,6 +3,7 @@ module github.com/asierhr/infraupgrade
 go 1.27.1
 
 require (
+	github.com/hashicorp/go-version v1.9.0
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/zclconf/go-cty v1.16.3
 )
