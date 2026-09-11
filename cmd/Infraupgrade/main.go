@@ -9,9 +9,22 @@ import (
 	"time"
 
 	"github.com/asierhr/infraupgrade/internal/analyzer"
+	"github.com/asierhr/infraupgrade/internal/gitprepare"
 	"github.com/asierhr/infraupgrade/internal/registry"
 	"github.com/asierhr/infraupgrade/internal/scanner"
 	"github.com/asierhr/infraupgrade/internal/upgrade"
+)
+
+type upgradeMode string
+
+type upgradeOptions struct {
+	Path string
+	Mode upgradeMode
+}
+
+const (
+	upgradeModeDryRun  upgradeMode = "dry-run"
+	upgradeModePrepare upgradeMode = "prepare"
 )
 
 func main() {
@@ -84,7 +97,9 @@ func main() {
 		printOutdatedResult(result, candidates)
 
 	case "upgrade":
-		path, err := getUpgradePath(os.Args[2:])
+		options, err := getUpgradeOptions(os.Args[2:])
+
+		path := options.Path
 
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -137,6 +152,35 @@ func main() {
 
 		if !report.Succeeded() || !upgrade.AllVersionsCheckPassed(versionChecks) {
 			os.Exit(2)
+		}
+
+		if options.Mode == upgradeModePrepare {
+			if decision.Recommendation == upgrade.RecommendationBlocked {
+				fmt.Fprintln(os.Stderr, "prepare blocked by upgradde recommendation")
+				os.Exit(2)
+			}
+
+			changeSet, err := upgrade.BuildLockfileChangeSet(report)
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "build upgrade changeset: %v\n", err)
+
+				os.Exit(1)
+			}
+
+			branch := prepareBranchName(updates)
+
+			commitMessage := prepareCommitMessage(updates)
+
+			prepareResult, err := gitprepare.Prepare(upgradeContext, path, changeSet, branch, commitMessage)
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "prepare upgrade %v\n", err)
+
+				os.Exit(1)
+			}
+
+			printPrepareResult(prepareResult)
 		}
 
 	case "version":
@@ -286,33 +330,47 @@ func printOutdatedResult(result scanner.Result, candidates []registry.UpgradeCan
 	}
 }
 
-func getUpgradePath(args []string) (string, error) {
-	path := "."
+func getUpgradeOptions(args []string) (upgradeOptions, error) {
+	options := upgradeOptions{
+		Path: ".",
+	}
+
 	pathSpecified := false
-	dryRun := false
 
 	for _, argument := range args {
+
 		switch {
 		case argument == "--dry-run":
-			dryRun = true
+			if options.Mode != "" {
+				return upgradeOptions{}, fmt.Errorf("upgrade accepts only one execution mode")
+			}
+
+			options.Mode = upgradeModeDryRun
+
+		case argument == "--prepare":
+			if options.Mode != "" {
+				return upgradeOptions{}, fmt.Errorf("upgrade accepts only one execution mode")
+			}
+
+			options.Mode = upgradeModePrepare
 
 		case strings.HasPrefix(argument, "-"):
-			return "", fmt.Errorf("unknown upgrade option: %s", argument)
+			return upgradeOptions{}, fmt.Errorf("unknown upgrade option: %s", argument)
 
 		case pathSpecified:
-			return "", fmt.Errorf("upgrade accepts at most one path")
+			return upgradeOptions{}, fmt.Errorf("upgrade accepts at most one path")
 
 		default:
-			path = argument
+			options.Path = argument
 			pathSpecified = true
 		}
 	}
 
-	if !dryRun {
-		return "", fmt.Errorf("upgrade currently requires --dry-run")
+	if options.Mode == "" {
+		return upgradeOptions{}, fmt.Errorf("upgrade requires --dry-run or --prepare")
 	}
 
-	return path, nil
+	return options, nil
 }
 
 func filterAvailableUpdates(candidates []registry.UpgradeCandidate) []registry.UpgradeCandidate {
@@ -491,4 +549,58 @@ func printCommandFailure(step upgrade.StepResult) {
 	for _, line := range strings.Split(errorOutput, "\n") {
 		fmt.Printf("      %s\n", strings.TrimRight(line, "\r"))
 	}
+}
+
+func prepareBranchName(updates []registry.UpgradeCandidate) string {
+	if len(updates) == 1 {
+		return fmt.Sprintf("infraupgrade/%s-%s", sanitizeGitName(updates[0].Provider), sanitizeGitName(updates[0].TargetVersion))
+	}
+
+	return "infraupgrade/provider-upgrades"
+}
+
+func prepareCommitMessage(updates []registry.UpgradeCandidate) string {
+	if len(updates) == 1 {
+		return fmt.Sprintf("chore(terraform): upgrade %s provider to %s", updates[0].Provider, updates[0].TargetVersion)
+	}
+
+	return "chore(terraform): upgrade providers"
+}
+
+func sanitizeGitName(value string) string {
+	replacer := strings.NewReplacer(
+		" ", "-",
+		"/", "-",
+		"\\", "-",
+		"_", "-",
+	)
+	return replacer.Replace(value)
+}
+
+func printPrepareResult(result gitprepare.Result) {
+	fmt.Println("\nUpgrade prepared locally:")
+
+	fmt.Printf(
+		"  Repository: %s\n",
+		result.RepositoryRoot,
+	)
+
+	fmt.Printf(
+		"  Branch: %s\n",
+		result.Branch,
+	)
+
+	fmt.Printf(
+		"  Commit: %s\n",
+		result.Commit,
+	)
+
+	fmt.Println("  Changed files:")
+
+	for _, file := range result.ChangedFiles {
+		fmt.Printf("    - %s\n", file)
+	}
+
+	fmt.Println("\nNo changes were pushed.")
+	fmt.Println("No pull request was created.")
 }

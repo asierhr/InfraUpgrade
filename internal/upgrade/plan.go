@@ -186,6 +186,10 @@ func detectStateContext(document planDocument) (StateContext, int) {
 	}
 
 	if resourcesWithPreviousState > 0 {
+		return StateContextExisting, resourcesWithPreviousState
+	}
+
+	if managedResources > 0 {
 		return StateContextFresh, 0
 	}
 

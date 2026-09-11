@@ -23,6 +23,7 @@ type ExecutionReport struct {
 	Plan             PlanSummary
 	PlanAvailable    bool
 	LockFileChanged  bool
+	LockFileContent  []byte
 	SelectedVersions map[string]string
 }
 
@@ -244,6 +245,8 @@ func executeWorkspace(ctx context.Context, name string, workspace string, origin
 	}
 
 	execution.LockFileChanged = !bytes.Equal(originalLock, updatedLock)
+
+	execution.LockFileContent = append([]byte(nil), updatedLock...)
 
 	selectedVersions, err := scanner.ReadLockedVersion(workspace)
 
