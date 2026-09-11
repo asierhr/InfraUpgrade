@@ -5,6 +5,25 @@ import (
 	"fmt"
 )
 
+type StateContext string
+
+type priorState struct {
+	Values *stateValues `json:"values"`
+}
+
+type stateValues struct {
+	RootModule *stateModule `json:"root_module"`
+}
+
+type stateModule struct {
+	Resources    []stateResource `json:"resources"`
+	ChildModules []stateModule   `json:"child_modules"`
+}
+
+type stateResource struct {
+	Mode string `json:"mode"`
+}
+
 type PlannedResourceChange struct {
 	Address string
 	Mode    string
@@ -29,12 +48,17 @@ type PlanSummary struct {
 	NoOp    int
 	Unknown int
 
+	StateContext         StateContext
+	PriorManagedResource int
+
 	Changes []PlannedResourceChange
 	Actions map[string]string
 	Plans   map[string]ResourcePlan
 }
 
 type planDocument struct {
+	PriorState *priorState `json:"prior_state"`
+
 	ResourceChanges []struct {
 		Address string `json:"address"`
 		Mode    string `json:"mode"`
@@ -50,6 +74,12 @@ type planDocument struct {
 		} `json:"change"`
 	} `json:"resource_changes"`
 }
+
+const (
+	StateContextExisting StateContext = "existing-infrastructure"
+	StateContextFresh    StateContext = "fresh-deployment"
+	StateContextUnknown  StateContext = "unknown"
+)
 
 func (summary PlanSummary) Risk() string {
 	switch {
@@ -73,6 +103,8 @@ func ParsePlanToJSON(content []byte) (PlanSummary, error) {
 		Actions: make(map[string]string),
 		Plans:   make(map[string]ResourcePlan),
 	}
+
+	summary.StateContext, summary.PriorManagedResource = detectStateContext(document)
 
 	for _, resource := range document.ResourceChanges {
 		action := classifyActions(resource.Change.Actions)
@@ -121,6 +153,63 @@ func ParsePlanToJSON(content []byte) (PlanSummary, error) {
 	}
 
 	return summary, nil
+}
+
+func detectStateContext(document planDocument) (StateContext, int) {
+	if document.PriorState != nil {
+		count := 0
+
+		if document.PriorState.Values != nil {
+			count = countManagedResources(document.PriorState.Values.RootModule)
+		}
+
+		if count > 0 {
+			return StateContextExisting, count
+		}
+
+		return StateContextFresh, 0
+	}
+
+	managedResources := 0
+	resourcesWithPreviousState := 0
+
+	for _, resource := range document.ResourceChanges {
+		if resource.Mode != "managed" {
+			continue
+		}
+
+		managedResources++
+
+		if resource.Change.Before != nil {
+			resourcesWithPreviousState++
+		}
+	}
+
+	if resourcesWithPreviousState > 0 {
+		return StateContextFresh, 0
+	}
+
+	return StateContextUnknown, 0
+}
+
+func countManagedResources(module *stateModule) int {
+	if module == nil {
+		return 0
+	}
+
+	count := 0
+
+	for _, resource := range module.Resources {
+		if resource.Mode == "managed" {
+			count++
+		}
+	}
+
+	for index := range module.ChildModules {
+		count += countManagedResources(&module.ChildModules[index])
+	}
+
+	return count
 }
 
 func classifyActions(actions []string) string {

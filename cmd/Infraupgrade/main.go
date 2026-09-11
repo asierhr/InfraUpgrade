@@ -426,7 +426,9 @@ func printUpgradeReport(scanResult scanner.Result, candidates []registry.Upgrade
 		fmt.Printf("    Verification: %s\n", status)
 	}
 
-	fmt.Printf("\nRecommendation: %s\n", decision.Recommendation)
+	fmt.Printf("\nValidation context: %s\n", decision.ValidationContext)
+
+	fmt.Printf("Recommendation: %s\n", decision.Recommendation)
 
 	for _, reason := range decision.Reasons {
 		fmt.Printf("  - %s\n", reason)
@@ -464,6 +466,10 @@ func printExecutionReport(execution upgrade.ExecutionReport) {
 		fmt.Printf("    Replace: %d\n", execution.Plan.Replace)
 
 		fmt.Printf("    Delete:  %d\n", execution.Plan.Delete)
+
+		fmt.Printf("  State context: %s\n", execution.Plan.StateContext)
+
+		fmt.Printf("  Prior managed resources: %d\n", execution.Plan.PriorManagedResource)
 	}
 
 	fmt.Printf("  Lockfile changed: %t\n", execution.LockFileChanged)
