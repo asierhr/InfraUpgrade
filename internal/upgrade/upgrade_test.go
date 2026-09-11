@@ -9,6 +9,16 @@ import (
 	"testing"
 )
 
+const baselineTestLock = `provider "registry.terraform.io/hashicorp/aws" {
+  version = "6.40.0"
+}
+`
+
+const upgradedTestLock = `provider "registry.terraform.io/hashicorp/aws" {
+  version = "6.64.0"
+}
+`
+
 type fakePlanRunner struct {
 	workspaces    map[string]bool
 	differentPlan bool
@@ -36,7 +46,7 @@ func (fake *fakePlanRunner) Run(
 		if isUpgraded {
 			if err := os.WriteFile(
 				filepath.Join(workingDirectory, ".terraform.lock.hcl"),
-				[]byte("upgraded lock"),
+				[]byte(upgradedTestLock),
 				0o600,
 			); err != nil {
 				return CommandResult{}, err
@@ -75,7 +85,7 @@ func (fake *fakePlanRunner) Run(
 func TestDryRunComparesBaselineAndUpgrade(t *testing.T) {
 	project := t.TempDir()
 	mustWriteFile(t, filepath.Join(project, "main.tf"), "resource content")
-	mustWriteFile(t, filepath.Join(project, ".terraform.lock.hcl"), "original lock")
+	mustWriteFile(t, filepath.Join(project, ".terraform.lock.hcl"), baselineTestLock)
 	runner := &fakePlanRunner{}
 
 	report, err := DryRun(context.Background(), project, runner)
@@ -97,9 +107,15 @@ func TestDryRunComparesBaselineAndUpgrade(t *testing.T) {
 	if len(report.Comparison.Differences) != 0 {
 		t.Fatalf("differences = %#v, want none", report.Comparison.Differences)
 	}
+	if report.Baseline.SelectedVersions["hashicorp/aws"] != "6.40.0" {
+		t.Fatalf("baseline selected versions = %#v", report.Baseline.SelectedVersions)
+	}
+	if report.Upgraded.SelectedVersions["hashicorp/aws"] != "6.64.0" {
+		t.Fatalf("upgraded selected versions = %#v", report.Upgraded.SelectedVersions)
+	}
 
 	content, readErr := os.ReadFile(filepath.Join(project, ".terraform.lock.hcl"))
-	if readErr != nil || string(content) != "original lock" {
+	if readErr != nil || string(content) != baselineTestLock {
 		t.Fatalf("original lockfile = %q, %v", content, readErr)
 	}
 	for workspace := range runner.workspaces {

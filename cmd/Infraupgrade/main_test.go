@@ -149,7 +149,26 @@ func TestPrintUpgradeReport(t *testing.T) {
 			Plan: upgrade.PlanSummary{Create: 27},
 		},
 		ComparisonAvailable: true,
+		Comparison: upgrade.PlanComparison{
+			AttributeDifferences: []upgrade.AttributeDifference{{
+				Address:    "aws_route.example",
+				Phase:      "after",
+				Path:       "odb_network_arn",
+				Kind:       upgrade.AttributeAdded,
+				SchemaOnly: true,
+			}},
+		},
 	}
+	versionChecks := []upgrade.ProviderVersionCheck{{
+		Name:             "aws",
+		Source:           "hashicorp/aws",
+		ExpectedBaseline: "6.40.0",
+		ActualBaseline:   "6.40.0",
+		ExpectedUpgrade:  "6.63.0",
+		ActualUpgrade:    "6.63.0",
+		BaselineFound:    true,
+		UpgradeFound:     true,
+	}}
 
 	output := captureStdout(t, func() {
 		printUpgradeReport(
@@ -158,11 +177,22 @@ func TestPrintUpgradeReport(t *testing.T) {
 				Provider: "aws", CurrentVersion: "6.40.0", TargetVersion: "6.63.0", ChangeType: "minor",
 			}},
 			report,
+			versionChecks,
 		)
 	})
 
-	if !strings.Contains(output, "Differences: 0") || !strings.Contains(output, "Dry-run succeeded: true") {
-		t.Fatalf("upgrade output = %q", output)
+	for _, expected := range []string{
+		"Action differences: 0",
+		"Attribute differences: 1",
+		"after.odb_network_arn added as null (schema-only)",
+		"Dry-run succeeded: true",
+		"Baseline selected: 6.40.0",
+		"Upgrade selected:  6.63.0",
+		"Verification: passed",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("upgrade output does not contain %q: %s", expected, output)
+		}
 	}
 }
 

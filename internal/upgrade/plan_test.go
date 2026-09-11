@@ -6,7 +6,7 @@ func TestParsePlanToJSONCountsActions(t *testing.T) {
 	content := []byte(`{
 		"resource_changes": [
 			{"address":"a.create","mode":"managed","change":{"actions":["create"]}},
-			{"address":"a.update","mode":"managed","change":{"actions":["update"]}},
+			{"address":"a.update","mode":"managed","change":{"actions":["update"],"before":{"size":"small"},"after":{"size":"large"},"after_unknown":{"id":true},"before_sensitive":false,"after_sensitive":{"password":true},"replace_paths":[["size"]]}},
 			{"address":"a.delete","mode":"managed","change":{"actions":["delete"]}},
 			{"address":"a.replace","mode":"managed","change":{"actions":["create","delete"]}},
 			{"address":"a.read","mode":"data","change":{"actions":["read"]}},
@@ -26,6 +26,22 @@ func TestParsePlanToJSONCountsActions(t *testing.T) {
 	}
 	if summary.Actions["a.noop"] != "no-op" || summary.Actions["a.unknown"] != "unknown" {
 		t.Fatalf("actions = %#v", summary.Actions)
+	}
+	resourcePlan, exists := summary.Plans["a.update"]
+	if !exists {
+		t.Fatal("plan for a.update was not stored")
+	}
+	before, ok := resourcePlan.Before.(map[string]any)
+	if !ok || before["size"] != "small" {
+		t.Fatalf("before = %#v, want size small", resourcePlan.Before)
+	}
+	after, ok := resourcePlan.After.(map[string]any)
+	if !ok || after["size"] != "large" {
+		t.Fatalf("after = %#v, want size large", resourcePlan.After)
+	}
+	afterUnknown, ok := resourcePlan.AfterUnknown.(map[string]any)
+	if !ok || afterUnknown["id"] != true {
+		t.Fatalf("after unknown = %#v, want id true", resourcePlan.AfterUnknown)
 	}
 	if len(summary.Changes) != 6 {
 		t.Fatalf("len(Changes) = %d, want 6", len(summary.Changes))

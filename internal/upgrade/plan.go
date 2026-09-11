@@ -11,6 +11,15 @@ type PlannedResourceChange struct {
 	Action  string
 }
 
+type ResourcePlan struct {
+	Before          any
+	After           any
+	AfterUnknown    any
+	BeforeSensitive any
+	AfterSensitive  any
+	ReplacePaths    any
+}
+
 type PlanSummary struct {
 	Create  int
 	Update  int
@@ -22,6 +31,7 @@ type PlanSummary struct {
 
 	Changes []PlannedResourceChange
 	Actions map[string]string
+	Plans   map[string]ResourcePlan
 }
 
 type planDocument struct {
@@ -30,7 +40,13 @@ type planDocument struct {
 		Mode    string `json:"mode"`
 
 		Change struct {
-			Actions []string `json:"actions"`
+			Actions         []string `json:"actions"`
+			Before          any      `json:"before"`
+			After           any      `json:"after"`
+			AfterUnknown    any      `json:"after_unknown"`
+			BeforeSensitive any      `json:"before_sensitive"`
+			AfterSensitive  any      `json:"after_sensitive"`
+			ReplacePaths    any      `json:"replace_paths"`
 		} `json:"change"`
 	} `json:"resource_changes"`
 }
@@ -55,12 +71,22 @@ func ParsePlanToJSON(content []byte) (PlanSummary, error) {
 
 	summary := PlanSummary{
 		Actions: make(map[string]string),
+		Plans:   make(map[string]ResourcePlan),
 	}
 
 	for _, resource := range document.ResourceChanges {
 		action := classifyActions(resource.Change.Actions)
 
 		summary.Actions[resource.Address] = action
+
+		summary.Plans[resource.Address] = ResourcePlan{
+			Before:          resource.Change.Before,
+			After:           resource.Change.After,
+			AfterUnknown:    resource.Change.AfterUnknown,
+			BeforeSensitive: resource.Change.BeforeSensitive,
+			AfterSensitive:  resource.Change.AfterSensitive,
+			ReplacePaths:    resource.Change.ReplacePaths,
+		}
 
 		switch action {
 		case "create":

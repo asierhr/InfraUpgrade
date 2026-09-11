@@ -91,3 +91,48 @@ func TestScanRejectsInvalidTerraform(t *testing.T) {
 		t.Fatal("Scan() error = nil, want parse error")
 	}
 }
+
+func TestReadLockedVersion(t *testing.T) {
+	root := t.TempDir()
+	lock := `
+provider "registry.terraform.io/hashicorp/aws" {
+  version = "6.40.0"
+}
+
+provider "registry.terraform.io/hashicorp/random" {
+  version = "3.7.2"
+}
+`
+	if err := os.WriteFile(filepath.Join(root, ".terraform.lock.hcl"), []byte(lock), 0o600); err != nil {
+		t.Fatalf("write lockfile: %v", err)
+	}
+
+	versions, err := ReadLockedVersion(root)
+	if err != nil {
+		t.Fatalf("ReadLockedVersion() error = %v", err)
+	}
+	if versions["hashicorp/aws"] != "6.40.0" || versions["hashicorp/random"] != "3.7.2" {
+		t.Fatalf("versions = %#v", versions)
+	}
+}
+
+func TestReadLockedVersionWithoutLockfile(t *testing.T) {
+	versions, err := ReadLockedVersion(t.TempDir())
+	if err != nil {
+		t.Fatalf("ReadLockedVersion() error = %v", err)
+	}
+	if len(versions) != 0 {
+		t.Fatalf("versions = %#v, want empty", versions)
+	}
+}
+
+func TestReadLockedVersionRejectsInvalidLockfile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".terraform.lock.hcl"), []byte("invalid lock"), 0o600); err != nil {
+		t.Fatalf("write lockfile: %v", err)
+	}
+
+	if _, err := ReadLockedVersion(root); err == nil {
+		t.Fatal("ReadLockedVersion() error = nil, want parse error")
+	}
+}

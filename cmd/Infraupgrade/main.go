@@ -131,7 +131,9 @@ func main() {
 
 		versionChecks := upgrade.VerifyProviderVersions(report, providerTargets(updates))
 
-		printUpgradeReport(scanResult, updates, report, versionChecks)
+		decision := upgrade.EvaluateRecommendation(report, versionChecks)
+
+		printUpgradeReport(scanResult, updates, report, versionChecks, decision)
 
 		if !report.Succeeded() || !upgrade.AllVersionsCheckPassed(versionChecks) {
 			os.Exit(2)
@@ -340,7 +342,8 @@ func providerTargets(candidates []registry.UpgradeCandidate) []upgrade.ProviderT
 	return targets
 }
 
-func printUpgradeReport(scanResult scanner.Result, candidates []registry.UpgradeCandidate, report upgrade.Report, versionChecks []upgrade.ProviderVersionCheck) {
+func printUpgradeReport(scanResult scanner.Result, candidates []registry.UpgradeCandidate, report upgrade.Report, versionChecks []upgrade.ProviderVersionCheck,
+	decision upgrade.UpgradeDecision) {
 
 	fmt.Printf("Project: %s\n", filepath.Clean(scanResult.Root))
 
@@ -356,14 +359,37 @@ func printUpgradeReport(scanResult scanner.Result, candidates []registry.Upgrade
 	if report.ComparisonAvailable {
 		fmt.Println("\nUpgrade comparison:")
 
-		fmt.Printf("  Differences: %d\n", len(report.Comparison.Differences))
+		fmt.Printf("  Action differences: %d\n", len(report.Comparison.Differences))
+
+		fmt.Printf("  Attribute differences: %d\n", len(report.Comparison.AttributeDifferences))
 
 		fmt.Printf("  Upgrade risk: %s\n", report.Comparison.Risk())
 
 		for _, difference := range report.Comparison.Differences {
-			fmt.Printf("  - %s: %s -> %s\n", difference.Address, difference.BaselineAction, difference.UpgradedAction)
+			fmt.Printf("  - %s: action %s -> %s\n", difference.Address, difference.BaselineAction, difference.UpgradedAction)
 		}
 
+		for _, difference := range report.Comparison.AttributeDifferences {
+			description := difference.Kind
+
+			if difference.SchemaOnly {
+				switch difference.Kind {
+				case upgrade.AttributeAdded:
+					description = "added as null (schema-only)"
+
+				case upgrade.AttributeRemoved:
+					description = "removed while null (schema-only)"
+				}
+			}
+
+			sensitiveLabel := ""
+
+			if difference.Sensitive {
+				sensitiveLabel = " (sensitive value hidden)"
+			}
+
+			fmt.Printf("  - %s: %s.%s %s%s\n", difference.Address, difference.Phase, difference.Path, description, sensitiveLabel)
+		}
 	} else {
 		fmt.Println("\nUpgrade comparison: unavailable")
 	}
@@ -398,6 +424,12 @@ func printUpgradeReport(scanResult scanner.Result, candidates []registry.Upgrade
 		}
 
 		fmt.Printf("    Verification: %s\n", status)
+	}
+
+	fmt.Printf("\nRecommendation: %s\n", decision.Recommendation)
+
+	for _, reason := range decision.Reasons {
+		fmt.Printf("  - %s\n", reason)
 	}
 }
 
