@@ -21,6 +21,11 @@ type Result struct {
 }
 
 func Prepare(ctx context.Context, projectRoot string, changeSet upgrade.ChangeSet, branch string, commitMessage string) (Result, error) {
+
+	if err := upgrade.ValidateChangeSet(changeSet); err != nil {
+		return Result{}, fmt.Errorf("validate changeset: %w", err)
+	}
+
 	absoluteProject, err := filepath.Abs(projectRoot)
 
 	if err != nil {
@@ -142,9 +147,6 @@ func applyChangeSet(worktree string, relativeProject string, changeSet upgrade.C
 	expectedFiles := make([]string, 0, len(changeSet.Files))
 
 	for _, file := range changeSet.Files {
-		if file.RelativePath != ".terraform.lock.hcl" {
-			return nil, fmt.Errorf("refusing unexpected file: %s", file.RelativePath)
-		}
 
 		repositoryRelativePath := filepath.Join(relativeProject, file.RelativePath)
 

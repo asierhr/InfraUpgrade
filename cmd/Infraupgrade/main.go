@@ -160,7 +160,9 @@ func main() {
 				os.Exit(2)
 			}
 
-			changeSet, err := upgrade.BuildLockfileChangeSet(report)
+			declarations := providerDeclarationForUpdates(scanResult, updates)
+
+			changeSet, err := upgrade.BuildPrepareChangeSet(report, path, declarations)
 
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "build upgrade changeset: %v\n", err)
@@ -200,6 +202,7 @@ func printUsage() {
 	fmt.Println("  infraupgrade check [path]")
 	fmt.Println("  infraupgrade outdated [path]")
 	fmt.Println("  infraupgrade upgrade [path] --dry-run")
+	fmt.Println("  infraupgrade upgrade [path] --prepare")
 }
 
 func printScanResult(result scanner.Result) {
@@ -237,25 +240,13 @@ func printScanResult(result scanner.Result) {
 			fmt.Println("    Locked: not found")
 		}
 
-		fmt.Printf(
-			"    Declared: %t\n",
-			provider.Declared,
-		)
+		fmt.Printf("    Declared: %t\n", provider.Declared)
 
-		fmt.Printf(
-			"    Configured: %t\n",
-			provider.Configured,
-		)
+		fmt.Printf("    Configured: %t\n", provider.Configured)
 
-		fmt.Printf(
-			"    Inferred: %t\n",
-			provider.Inferred,
-		)
+		fmt.Printf("    Inferred: %t\n", provider.Inferred)
 
-		fmt.Printf(
-			"    Resources: %d\n",
-			provider.ResourceCount,
-		)
+		fmt.Printf("    Resources: %d\n", provider.ResourceCount)
 	}
 }
 
@@ -580,20 +571,11 @@ func sanitizeGitName(value string) string {
 func printPrepareResult(result gitprepare.Result) {
 	fmt.Println("\nUpgrade prepared locally:")
 
-	fmt.Printf(
-		"  Repository: %s\n",
-		result.RepositoryRoot,
-	)
+	fmt.Printf("  Repository: %s\n", result.RepositoryRoot)
 
-	fmt.Printf(
-		"  Branch: %s\n",
-		result.Branch,
-	)
+	fmt.Printf("  Branch: %s\n", result.Branch)
 
-	fmt.Printf(
-		"  Commit: %s\n",
-		result.Commit,
-	)
+	fmt.Printf("  Commit: %s\n", result.Commit)
 
 	fmt.Println("  Changed files:")
 
@@ -603,4 +585,30 @@ func printPrepareResult(result gitprepare.Result) {
 
 	fmt.Println("\nNo changes were pushed.")
 	fmt.Println("No pull request was created.")
+}
+
+func providerDeclarationForUpdates(scanResult scanner.Result, updates []registry.UpgradeCandidate) []upgrade.ProviderDeclaration {
+	providersByName := make(map[string]scanner.Provider)
+
+	for _, provider := range scanResult.Providers {
+		providersByName[provider.Name] = provider
+	}
+
+	declarations := make([]upgrade.ProviderDeclaration, 0)
+
+	for _, candidate := range updates {
+		provider, exists := providersByName[candidate.Provider]
+
+		if exists && provider.Declared {
+			continue
+		}
+
+		declarations = append(declarations, upgrade.ProviderDeclaration{
+			Name:       candidate.Provider,
+			Source:     candidate.Source,
+			Constraint: fmt.Sprintf("~> %s", candidate.TargetVersion),
+		})
+	}
+
+	return declarations
 }
