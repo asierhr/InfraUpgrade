@@ -185,12 +185,7 @@ func compareValueTrees(
 	}
 
 	if isSensitive(baselineSensitive) || isSensitive(upgradedSensitive) {
-		*differences = append(*differences, AttributeDifference{
-			Address:   address,
-			Phase:     phase,
-			Path:      printablePath(path),
-			Sensitive: true,
-		})
+		appendAttributeDifference(address, phase, path, baseline, upgraded, true, differences)
 
 		return
 	}

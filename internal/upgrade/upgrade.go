@@ -33,6 +33,7 @@ type Report struct {
 	Upgraded            ExecutionReport
 	Comparison          PlanComparison
 	ComparisonAvailable bool
+	AppliedMigrations   []AppliedMigration
 }
 
 type stepDefinition struct {
@@ -78,7 +79,11 @@ func (report Report) Succeeded() bool {
 	return report.Baseline.Succeeded() && report.Upgraded.Succeeded() && report.ComparisonAvailable
 }
 
-func DryRun(ctx context.Context, projectRoot string, runner Runner) (report Report, err error) {
+func DryRun(ctx context.Context, projectRoot string, runner Runner) (Report, error) {
+	return dryRun(ctx, projectRoot, runner, nil)
+}
+
+func dryRun(ctx context.Context, projectRoot string, runner Runner, migrate workspaceMigrator) (report Report, err error) {
 	absoluteRoot, err := filepath.Abs(projectRoot)
 
 	if err != nil {
@@ -131,6 +136,14 @@ func DryRun(ctx context.Context, projectRoot string, runner Runner) (report Repo
 
 	if err != nil {
 		return report, err
+	}
+
+	if migrate != nil {
+		report.AppliedMigrations, err = migrate(upgradedWorkspace)
+
+		if err != nil {
+			return report, fmt.Errorf("migrate upgraded workspace: %w", err)
+		}
 	}
 
 	report.Upgraded, err = executeWorkspace(ctx, "upgraded", upgradedWorkspace, originalLock, true, runner)

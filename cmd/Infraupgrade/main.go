@@ -10,6 +10,7 @@ import (
 
 	"github.com/asierhr/infraupgrade/internal/analyzer"
 	"github.com/asierhr/infraupgrade/internal/gitprepare"
+	"github.com/asierhr/infraupgrade/internal/migration"
 	"github.com/asierhr/infraupgrade/internal/registry"
 	"github.com/asierhr/infraupgrade/internal/scanner"
 	"github.com/asierhr/infraupgrade/internal/upgrade"
@@ -136,7 +137,9 @@ func main() {
 
 		defer cancelUpgrade()
 
-		report, err := upgrade.DryRun(upgradeContext, path, upgrade.NewCommandRunner())
+		migrationEngine := migration.DefaultEngine()
+
+		report, err := upgrade.DryRunWithMigrations(upgradeContext, path, upgrade.NewCommandRunner(), migrationEngine, providerTargets(updates))
 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "upgrade dry-run failed: %v\n", err)
@@ -183,6 +186,7 @@ func main() {
 			}
 
 			printPrepareResult(prepareResult)
+			printAppliedMigrations(report.AppliedMigrations)
 		}
 
 	case "version":
@@ -611,4 +615,19 @@ func providerDeclarationForUpdates(scanResult scanner.Result, updates []registry
 	}
 
 	return declarations
+}
+
+func printAppliedMigrations(migrations []upgrade.AppliedMigration) {
+	fmt.Println("\nApplied migrations:")
+
+	if len(migrations) == 0 {
+		fmt.Println("  none")
+		return
+	}
+
+	for _, applied := range migrations {
+		fmt.Printf("\n  - %s\n", applied.RuleID)
+		fmt.Printf("    File: %s\n", applied.RelativePath)
+		fmt.Printf("    Description: %s\n", applied.Description)
+	}
 }

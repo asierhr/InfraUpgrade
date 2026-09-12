@@ -167,7 +167,7 @@ func projectHasRequiredProviders(projectRoot string) (bool, error) {
 		file, diagnostics := hclwrite.ParseConfig(content, path, hcl.InitialPos)
 
 		if diagnostics.HasErrors() {
-			return false, fmt.Errorf("parse %s: %w", path, err)
+			return false, fmt.Errorf("parse %s: %s", path, diagnostics.Error())
 		}
 
 		for _, block := range file.Body().Blocks() {

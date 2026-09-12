@@ -12,6 +12,7 @@ type ChangeKind string
 const (
 	ChangeLockFile            ChangeKind = "lockfile"
 	ChangeProviderDeclaration ChangeKind = "provider-declaration"
+	ChangeTerraformMigration  ChangeKind = "terraform-migrations"
 )
 
 type FileChange struct {
@@ -45,6 +46,14 @@ func BuildLockfileChangeSet(report Report) (ChangeSet, error) {
 				Content:      append([]byte(nil), report.Upgraded.LockFileContent...),
 			},
 		},
+	}
+
+	for _, appliedMigration := range report.AppliedMigrations {
+		changeSet.Files = append(changeSet.Files, FileChange{
+			RelativePath: appliedMigration.RelativePath,
+			Kind:         ChangeTerraformMigration,
+			Content:      append([]byte(nil), appliedMigration.Content...),
+		})
 	}
 
 	if err := ValidateChangeSet(changeSet); err != nil {
@@ -108,6 +117,10 @@ func ValidateChangeSet(changeSet ChangeSet) error {
 		case ChangeProviderDeclaration:
 			if filepath.Ext(normalizedPath) != ".tf" {
 				return fmt.Errorf("provider declaration must be a .tf file: %s", normalizedPath)
+			}
+		case ChangeTerraformMigration:
+			if filepath.Ext(normalizedPath) != ".tf" {
+				return fmt.Errorf("Terraform migration must modify a .tf file: %s", normalizedPath)
 			}
 		default:
 

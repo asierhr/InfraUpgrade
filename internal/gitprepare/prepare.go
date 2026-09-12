@@ -187,7 +187,7 @@ func readChangedFiles(ctx context.Context, worktree string) ([]string, error) {
 			return nil, fmt.Errorf("unexpected git status entry: %q", entry)
 		}
 
-		status := entry[2:]
+		status := entry[:2]
 
 		if strings.ContainsAny(status, "RC") {
 			return nil, fmt.Errorf("renamed or copied files are not allowed")
