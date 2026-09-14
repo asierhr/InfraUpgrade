@@ -70,6 +70,7 @@ func TestUpgradeDecisionIsSafe(t *testing.T) {
 func successfulReportForDecision(context StateContext) Report {
 	steps := []StepResult{
 		{Name: "init", Required: true},
+		{Name: "schema", Required: true},
 		{Name: "validate", Required: true},
 		{Name: "plan", Required: true},
 		{Name: "show", Required: true},

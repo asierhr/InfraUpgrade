@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/asierhr/infraupgrade/internal/scanner"
+	"github.com/asierhr/infraupgrade/internal/schemadiff"
 )
 
 type StepResult struct {
@@ -18,13 +19,14 @@ type StepResult struct {
 }
 
 type ExecutionReport struct {
-	Name             string
-	Steps            []StepResult
-	Plan             PlanSummary
-	PlanAvailable    bool
-	LockFileChanged  bool
-	LockFileContent  []byte
-	SelectedVersions map[string]string
+	Name               string
+	Steps              []StepResult
+	Plan               PlanSummary
+	PlanAvailable      bool
+	LockFileChanged    bool
+	LockFileContent    []byte
+	SelectedVersions   map[string]string
+	ProviderSchemaJSON []byte
 }
 
 type Report struct {
@@ -34,6 +36,9 @@ type Report struct {
 	Comparison          PlanComparison
 	ComparisonAvailable bool
 	AppliedMigrations   []AppliedMigration
+
+	AssignmentAnalysis          schemadiff.Report
+	AssignmentAnalysisAvailable bool
 }
 
 type stepDefinition struct {
@@ -49,6 +54,7 @@ func (step StepResult) Passed() bool {
 func (execution ExecutionReport) Succeeded() bool {
 	requiredSteps := map[string]bool{
 		"init":     false,
+		"schema":   false,
 		"validate": false,
 		"plan":     false,
 		"show":     false,
@@ -152,6 +158,17 @@ func dryRun(ctx context.Context, projectRoot string, runner Runner, migrate work
 		return report, err
 	}
 
+	if len(report.Baseline.ProviderSchemaJSON) > 0 && len(report.Upgraded.ProviderSchemaJSON) > 0 {
+		assigmentAnalysis, detectErr := schemadiff.Detect(absoluteRoot, report.Baseline.ProviderSchemaJSON, report.Upgraded.ProviderSchemaJSON)
+
+		if detectErr != nil {
+			return report, fmt.Errorf("detect assignment schema changes: %w", detectErr)
+		}
+
+		report.AssignmentAnalysis = assigmentAnalysis
+		report.AssignmentAnalysisAvailable = true
+	}
+
 	if report.Baseline.PlanAvailable && report.Upgraded.PlanAvailable {
 		report.Comparison = ComparePlans(report.Baseline.Plan, report.Upgraded.Plan)
 
@@ -182,6 +199,14 @@ func executeWorkspace(ctx context.Context, name string, workspace string, origin
 		{
 			name: "init",
 			args: initArguments,
+		},
+		{
+			name: "schema",
+			args: []string{
+				"providers",
+				"schema",
+				"-json",
+			},
 		},
 		{
 			name: "fmt",
@@ -244,6 +269,14 @@ func executeWorkspace(ctx context.Context, name string, workspace string, origin
 
 			execution.Plan = planSummary
 			execution.PlanAvailable = true
+		}
+
+		if step.name == "schema" && stepResult.Passed() {
+			if len(bytes.TrimSpace([]byte(commandResult.Stdout))) == 0 {
+				return execution, fmt.Errorf("%s provider schema output is empty", name)
+			}
+
+			execution.ProviderSchemaJSON = append([]byte(nil), []byte(commandResult.Stdout)...)
 		}
 
 		if !stepResult.Passed() && !step.continueOnFailure {

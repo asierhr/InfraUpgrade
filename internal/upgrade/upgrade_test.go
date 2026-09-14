@@ -19,12 +19,53 @@ const upgradedTestLock = `provider "registry.terraform.io/hashicorp/aws" {
 }
 `
 
+const baselineTestSchema = `{
+  "format_version": "1.0",
+  "provider_schemas": {
+    "registry.terraform.io/hashicorp/aws": {
+      "resource_schemas": {
+        "aws_instance": {
+          "block": {
+            "attributes": {
+              "ami": {"type": "string", "optional": true}
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+const upgradedTestSchema = `{
+  "format_version": "1.0",
+  "provider_schemas": {
+    "registry.terraform.io/hashicorp/aws": {
+      "resource_schemas": {
+        "aws_instance": {
+          "block": {
+            "attributes": {
+              "ami": {"type": ["list", "string"], "optional": true}
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+const testTerraformResource = `resource "aws_instance" "web" {
+  ami = "ami-test"
+}
+`
+
 type fakePlanRunner struct {
-	workspaces    map[string]bool
-	differentPlan bool
-	failStep      string
-	failExecution string
-	runError      error
+	workspaces     map[string]bool
+	differentPlan  bool
+	failStep       string
+	failExecution  string
+	runError       error
+	baselineSchema string
+	upgradedSchema string
 }
 
 func (fake *fakePlanRunner) Run(
@@ -64,6 +105,15 @@ func (fake *fakePlanRunner) Run(
 		Args:     append([]string(nil), args...),
 		ExitCode: 0,
 	}
+	if command == "providers" {
+		result.Stdout = fake.baselineSchema
+		if result.Stdout == "" {
+			result.Stdout = baselineTestSchema
+		}
+		if isUpgraded && fake.upgradedSchema != "" {
+			result.Stdout = fake.upgradedSchema
+		}
+	}
 	if command == fake.failStep &&
 		(fake.failExecution == "" || fake.failExecution == executionName) {
 		result.ExitCode = 1
@@ -84,7 +134,7 @@ func (fake *fakePlanRunner) Run(
 
 func TestDryRunComparesBaselineAndUpgrade(t *testing.T) {
 	project := t.TempDir()
-	mustWriteFile(t, filepath.Join(project, "main.tf"), "resource content")
+	mustWriteFile(t, filepath.Join(project, "main.tf"), testTerraformResource)
 	mustWriteFile(t, filepath.Join(project, ".terraform.lock.hcl"), baselineTestLock)
 	runner := &fakePlanRunner{}
 
@@ -98,7 +148,7 @@ func TestDryRunComparesBaselineAndUpgrade(t *testing.T) {
 	if report.Baseline.Name != "baseline" || report.Upgraded.Name != "upgraded" {
 		t.Fatalf("execution names = %q, %q", report.Baseline.Name, report.Upgraded.Name)
 	}
-	if len(report.Baseline.Steps) != 5 || len(report.Upgraded.Steps) != 5 {
+	if len(report.Baseline.Steps) != 6 || len(report.Upgraded.Steps) != 6 {
 		t.Fatalf("step counts = %d, %d", len(report.Baseline.Steps), len(report.Upgraded.Steps))
 	}
 	if report.Baseline.LockFileChanged || !report.Upgraded.LockFileChanged {
@@ -106,6 +156,9 @@ func TestDryRunComparesBaselineAndUpgrade(t *testing.T) {
 	}
 	if len(report.Comparison.Differences) != 0 {
 		t.Fatalf("differences = %#v, want none", report.Comparison.Differences)
+	}
+	if !report.AssignmentAnalysisAvailable || len(report.AssignmentAnalysis.Changes) != 0 {
+		t.Fatalf("assignment analysis = %#v", report.AssignmentAnalysis)
 	}
 	if report.Baseline.SelectedVersions["hashicorp/aws"] != "6.40.0" {
 		t.Fatalf("baseline selected versions = %#v", report.Baseline.SelectedVersions)
@@ -125,7 +178,7 @@ func TestDryRunComparesBaselineAndUpgrade(t *testing.T) {
 
 func TestDryRunDetectsUpgradeDifference(t *testing.T) {
 	project := t.TempDir()
-	mustWriteFile(t, filepath.Join(project, "main.tf"), "resource content")
+	mustWriteFile(t, filepath.Join(project, "main.tf"), testTerraformResource)
 	runner := &fakePlanRunner{differentPlan: true}
 
 	report, err := DryRun(context.Background(), project, runner)
@@ -142,7 +195,7 @@ func TestDryRunDetectsUpgradeDifference(t *testing.T) {
 
 func TestDryRunContinuesAfterFormattingWarning(t *testing.T) {
 	project := t.TempDir()
-	mustWriteFile(t, filepath.Join(project, "main.tf"), "resource content")
+	mustWriteFile(t, filepath.Join(project, "main.tf"), testTerraformResource)
 	runner := &fakePlanRunner{failStep: "fmt"}
 
 	report, err := DryRun(context.Background(), project, runner)
@@ -152,14 +205,14 @@ func TestDryRunContinuesAfterFormattingWarning(t *testing.T) {
 	if !report.Succeeded() {
 		t.Fatalf("report should succeed with formatting warnings: %#v", report)
 	}
-	if report.Baseline.Steps[1].Required || report.Baseline.Steps[1].Passed() {
-		t.Fatalf("fmt step = %#v, want non-required warning", report.Baseline.Steps[1])
+	if report.Baseline.Steps[2].Required || report.Baseline.Steps[2].Passed() {
+		t.Fatalf("fmt step = %#v, want non-required warning", report.Baseline.Steps[2])
 	}
 }
 
 func TestDryRunStopsExecutionAfterRequiredFailure(t *testing.T) {
 	project := t.TempDir()
-	mustWriteFile(t, filepath.Join(project, "main.tf"), "resource content")
+	mustWriteFile(t, filepath.Join(project, "main.tf"), testTerraformResource)
 	runner := &fakePlanRunner{failStep: "validate", failExecution: "baseline"}
 
 	report, err := DryRun(context.Background(), project, runner)
@@ -169,8 +222,8 @@ func TestDryRunStopsExecutionAfterRequiredFailure(t *testing.T) {
 	if report.Succeeded() || report.ComparisonAvailable {
 		t.Fatalf("report = %#v, want unsuccessful report", report)
 	}
-	if len(report.Baseline.Steps) != 3 {
-		t.Fatalf("baseline steps = %d, want 3", len(report.Baseline.Steps))
+	if len(report.Baseline.Steps) != 4 {
+		t.Fatalf("baseline steps = %d, want 4", len(report.Baseline.Steps))
 	}
 	if !report.Upgraded.Succeeded() {
 		t.Fatal("upgraded execution should still complete")
@@ -179,7 +232,7 @@ func TestDryRunStopsExecutionAfterRequiredFailure(t *testing.T) {
 
 func TestDryRunReturnsRunnerError(t *testing.T) {
 	project := t.TempDir()
-	mustWriteFile(t, filepath.Join(project, "main.tf"), "resource content")
+	mustWriteFile(t, filepath.Join(project, "main.tf"), testTerraformResource)
 
 	_, err := DryRun(
 		context.Background(),
@@ -196,6 +249,7 @@ func TestExecutionSucceededRequiresEveryRequiredStep(t *testing.T) {
 		PlanAvailable: true,
 		Steps: []StepResult{
 			{Name: "init", Required: true, Command: CommandResult{ExitCode: 0}},
+			{Name: "schema", Required: true, Command: CommandResult{ExitCode: 0}},
 			{Name: "validate", Required: true, Command: CommandResult{ExitCode: 0}},
 			{Name: "plan", Required: true, Command: CommandResult{ExitCode: 0}},
 		},
@@ -204,6 +258,62 @@ func TestExecutionSucceededRequiresEveryRequiredStep(t *testing.T) {
 	if execution.Succeeded() {
 		t.Fatal("Succeeded() = true without show step")
 	}
+}
+
+func TestDryRunDetectsAssignmentTypeChange(t *testing.T) {
+	project := t.TempDir()
+	mustWriteFile(t, filepath.Join(project, "main.tf"), testTerraformResource)
+
+	report, err := DryRun(context.Background(), project, &fakePlanRunner{
+		baselineSchema: baselineTestSchema,
+		upgradedSchema: upgradedTestSchema,
+	})
+	if err != nil {
+		t.Fatalf("DryRun() error = %v", err)
+	}
+	if !report.AssignmentAnalysisAvailable || len(report.AssignmentAnalysis.Changes) != 1 {
+		t.Fatalf("assignment analysis = %#v", report.AssignmentAnalysis)
+	}
+	change := report.AssignmentAnalysis.Changes[0]
+	if change.Assignment.Attribute != "ami" || change.BeforeType != `"string"` || change.AfterType != `["list","string"]` {
+		t.Fatalf("assignment change = %#v", change)
+	}
+}
+
+func TestDryRunRejectsEmptyProviderSchema(t *testing.T) {
+	project := t.TempDir()
+	mustWriteFile(t, filepath.Join(project, "main.tf"), testTerraformResource)
+
+	runner := &emptySchemaRunner{fakePlanRunner: fakePlanRunner{}}
+	_, err := DryRun(context.Background(), project, runner)
+	if err == nil || !strings.Contains(err.Error(), "provider schema output is empty") {
+		t.Fatalf("DryRun() error = %v", err)
+	}
+}
+
+func TestDryRunPreservesProviderSchemaParseError(t *testing.T) {
+	project := t.TempDir()
+	mustWriteFile(t, filepath.Join(project, "main.tf"), testTerraformResource)
+
+	_, err := DryRun(context.Background(), project, &fakePlanRunner{
+		baselineSchema: baselineTestSchema,
+		upgradedSchema: "not-json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "decode provider schema JSON") {
+		t.Fatalf("DryRun() error = %v; want provider schema decode error", err)
+	}
+}
+
+type emptySchemaRunner struct {
+	fakePlanRunner
+}
+
+func (runner *emptySchemaRunner) Run(ctx context.Context, workingDirectory string, args ...string) (CommandResult, error) {
+	result, err := runner.fakePlanRunner.Run(ctx, workingDirectory, args...)
+	if len(args) > 0 && args[0] == "providers" {
+		result.Stdout = ""
+	}
+	return result, err
 }
 
 func containsString(values []string, expected string) bool {

@@ -11,6 +11,7 @@ import (
 	"github.com/asierhr/infraupgrade/internal/gitprepare"
 	"github.com/asierhr/infraupgrade/internal/registry"
 	"github.com/asierhr/infraupgrade/internal/scanner"
+	"github.com/asierhr/infraupgrade/internal/schemadiff"
 	"github.com/asierhr/infraupgrade/internal/upgrade"
 )
 
@@ -192,7 +193,7 @@ func TestPrintUpgradeReport(t *testing.T) {
 	}
 	execution := upgrade.ExecutionReport{
 		Name: "baseline", PlanAvailable: true,
-		Steps: []upgrade.StepResult{step("init"), step("validate"), step("plan"), step("show")},
+		Steps: []upgrade.StepResult{step("init"), step("schema"), step("validate"), step("plan"), step("show")},
 		Plan: upgrade.PlanSummary{
 			Create:               27,
 			StateContext:         upgrade.StateContextExisting,
@@ -295,6 +296,57 @@ func TestPrintPrepareResult(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("prepare output does not contain %q: %s", expected, output)
 		}
+	}
+}
+
+func TestPrintAssignmentChanges(t *testing.T) {
+	tests := []struct {
+		name     string
+		report   upgrade.Report
+		expected []string
+	}{
+		{
+			name:     "unavailable",
+			report:   upgrade.Report{},
+			expected: []string{"Configuration assignment changes:", "unavailable"},
+		},
+		{
+			name: "none",
+			report: upgrade.Report{
+				AssignmentAnalysisAvailable: true,
+			},
+			expected: []string{"Configuration assignment changes:", "none"},
+		},
+		{
+			name: "nested type and nesting change",
+			report: upgrade.Report{
+				AssignmentAnalysisAvailable: true,
+				AssignmentAnalysis: schemadiff.Report{Changes: []schemadiff.AssigmentChange{{
+					Assignment: schemadiff.Assignment{
+						File: "main.tf", ResourceType: "aws_instance", ResourceName: "web",
+						BlockPath: []string{"root_block_device"}, Attribute: "volume_size", Expression: "var.disk_size",
+					},
+					Kind: schemadiff.NestingModeChanged, BeforeType: `"number"`, AfterType: `"string"`,
+					BeforeNestingMode: "list", AfterNestingMode: "set",
+				}}},
+			},
+			expected: []string{
+				"aws_instance.web.root_block_device.volume_size", "File: main.tf", "Change: nesting-mode-changed",
+				`Before type: "number"`, `After type:  "string"`, "Before nesting: list", "After nesting:  set",
+				"Expression: var.disk_size",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := captureStdout(t, func() { printAssignmentChanges(test.report) })
+			for _, expected := range test.expected {
+				if !strings.Contains(output, expected) {
+					t.Fatalf("assignment output does not contain %q: %s", expected, output)
+				}
+			}
+		})
 	}
 }
 

@@ -74,6 +74,23 @@ func TestBuildPrepareChangeSetAddsProviderDeclaration(t *testing.T) {
 	}
 }
 
+func TestBuildLockfileChangeSetAddsAppliedMigrations(t *testing.T) {
+	report := successfulReportForChangeSet()
+	report.Upgraded.LockFileChanged = true
+	report.Upgraded.LockFileContent = []byte("lock")
+	report.AppliedMigrations = []AppliedMigration{{
+		RelativePath: "main.tf", RuleID: "rename", Description: "rename attribute", Content: []byte("resource content"),
+	}}
+
+	changeSet, err := BuildLockfileChangeSet(report)
+	if err != nil {
+		t.Fatalf("BuildLockfileChangeSet() error = %v", err)
+	}
+	if len(changeSet.Files) != 2 || changeSet.Files[1].Kind != ChangeTerraformMigration || changeSet.Files[1].RelativePath != "main.tf" {
+		t.Fatalf("BuildLockfileChangeSet() = %#v", changeSet)
+	}
+}
+
 func TestValidateChangeSet(t *testing.T) {
 	validLock := FileChange{RelativePath: ".terraform.lock.hcl", Kind: ChangeLockFile, Content: []byte("lock")}
 	tests := []struct {
@@ -88,6 +105,7 @@ func TestValidateChangeSet(t *testing.T) {
 		{name: "duplicate", changeSet: ChangeSet{Files: []FileChange{validLock, validLock}}, wantError: "duplicate"},
 		{name: "wrong lock path", changeSet: ChangeSet{Files: []FileChange{{RelativePath: "lock.hcl", Kind: ChangeLockFile, Content: []byte("x")}}}, wantError: "unexpected path"},
 		{name: "declaration is not tf", changeSet: ChangeSet{Files: []FileChange{{RelativePath: "versions.txt", Kind: ChangeProviderDeclaration, Content: []byte("x")}}}, wantError: "must be a .tf"},
+		{name: "migration is not tf", changeSet: ChangeSet{Files: []FileChange{{RelativePath: "migration.txt", Kind: ChangeTerraformMigration, Content: []byte("x")}}}, wantError: "must modify a .tf"},
 		{name: "unsupported kind", changeSet: ChangeSet{Files: []FileChange{{RelativePath: "file.tf", Kind: ChangeKind("other"), Content: []byte("x")}}}, wantError: "unsupported change kind"},
 		{name: "blank content", changeSet: ChangeSet{Files: []FileChange{{RelativePath: "versions.tf", Kind: ChangeProviderDeclaration, Content: []byte("  \n")}}}, wantError: "is empty"},
 	}
@@ -111,6 +129,7 @@ func TestValidateChangeSet(t *testing.T) {
 func successfulReportForChangeSet() Report {
 	steps := []StepResult{
 		{Name: "init", Required: true},
+		{Name: "schema", Required: true},
 		{Name: "validate", Required: true},
 		{Name: "plan", Required: true},
 		{Name: "show", Required: true},

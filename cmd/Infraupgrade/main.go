@@ -153,6 +153,8 @@ func main() {
 
 		printUpgradeReport(scanResult, updates, report, versionChecks, decision)
 
+		printAssignmentChanges(report)
+
 		if !report.Succeeded() || !upgrade.AllVersionsCheckPassed(versionChecks) {
 			os.Exit(2)
 		}
@@ -629,5 +631,39 @@ func printAppliedMigrations(migrations []upgrade.AppliedMigration) {
 		fmt.Printf("\n  - %s\n", applied.RuleID)
 		fmt.Printf("    File: %s\n", applied.RelativePath)
 		fmt.Printf("    Description: %s\n", applied.Description)
+	}
+}
+
+func printAssignmentChanges(report upgrade.Report) {
+	fmt.Println("\nConfiguration assignment changes:")
+
+	if !report.AssignmentAnalysisAvailable {
+		fmt.Println("  unavailable")
+		return
+	}
+
+	if len(report.AssignmentAnalysis.Changes) == 0 {
+		fmt.Println("  none")
+		return
+	}
+
+	for _, change := range report.AssignmentAnalysis.Changes {
+		assignment := change.Assignment
+
+		fmt.Printf("\n  - %s.%s.%s\n", assignment.ResourceType, assignment.ResourceName, assignment.Attribute)
+
+		fmt.Printf("    File: %s\n", assignment.File)
+
+		fmt.Printf("    Change: %s\n", change.Kind)
+
+		if change.BeforeType != "" {
+			fmt.Printf("    Before type: %s\n", change.BeforeType)
+		}
+
+		if change.AfterType != "" {
+			fmt.Printf("    After type:  %s\n", change.AfterType)
+		}
+
+		fmt.Printf("    Expression: %s\n", assignment.Expression)
 	}
 }
