@@ -68,6 +68,8 @@ type AssigmentChange struct {
 type Report struct {
 	Assigments []Assignment
 	Changes    []AssigmentChange
+	Baseline   Snapshot
+	Upgraded   Snapshot
 }
 
 type resolvedAssignment struct {
@@ -139,6 +141,8 @@ func Detect(projectRoot string, baselineSchemaJSON []byte, upgradedSchemaJSON []
 	return Report{
 		Assigments: assigments,
 		Changes:    changes,
+		Baseline:   baseline,
+		Upgraded:   upgraded,
 	}, nil
 }
 

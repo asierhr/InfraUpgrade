@@ -139,7 +139,9 @@ func main() {
 
 		migrationEngine := migration.DefaultEngine()
 
-		report, err := upgrade.DryRunWithMigrations(upgradeContext, path, upgrade.NewCommandRunner(), migrationEngine, providerTargets(updates))
+		targets := providerTargets(updates)
+
+		report, err := upgrade.DryRunWithMigrations(upgradeContext, path, upgrade.NewCommandRunner(), migrationEngine, targets)
 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "upgrade dry-run failed: %v\n", err)
@@ -147,13 +149,20 @@ func main() {
 			os.Exit(1)
 		}
 
-		versionChecks := upgrade.VerifyProviderVersions(report, providerTargets(updates))
+		if err := upgrade.VerifyMigrationPlan(upgradeContext, path, &report, upgrade.NewCommandRunner(), targets); err != nil {
+			fmt.Fprintf(os.Stderr, "migration verification failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		versionChecks := upgrade.VerifyProviderVersions(report, targets)
 
 		decision := upgrade.EvaluateRecommendation(report, versionChecks)
 
 		printUpgradeReport(scanResult, updates, report, versionChecks, decision)
 
 		printAssignmentChanges(report)
+
+		printMigrationPlan(report)
 
 		if !report.Succeeded() || !upgrade.AllVersionsCheckPassed(versionChecks) {
 			os.Exit(2)
@@ -650,7 +659,7 @@ func printAssignmentChanges(report upgrade.Report) {
 	for _, change := range report.AssignmentAnalysis.Changes {
 		assignment := change.Assignment
 
-		fmt.Printf("\n  - %s.%s.%s\n", assignment.ResourceType, assignment.ResourceName, assignment.Attribute)
+		fmt.Printf("\n  - %s.%s.%s\n", assignment.ResourceType, assignment.ResourceName, assignment.FullPath())
 
 		fmt.Printf("    File: %s\n", assignment.File)
 
@@ -664,6 +673,82 @@ func printAssignmentChanges(report upgrade.Report) {
 			fmt.Printf("    After type:  %s\n", change.AfterType)
 		}
 
+		if change.BeforeNestingMode != "" {
+			fmt.Printf("    Before nesting: %s\n", change.BeforeNestingMode)
+		}
+
+		if change.AfterNestingMode != "" {
+			fmt.Printf("    After nesting:  %s\n", change.AfterNestingMode)
+		}
+
 		fmt.Printf("    Expression: %s\n", assignment.Expression)
 	}
+}
+
+func printMigrationPlan(report upgrade.Report) {
+	fmt.Println("\nMigration proposals:")
+
+	if !report.AssignmentAnalysisAvailable {
+		fmt.Println("  unavailable")
+		return
+	}
+
+	if len(report.MigrationPlan.Proposals) == 0 {
+		fmt.Println("  none")
+		return
+	}
+
+	for _, proposal := range report.MigrationPlan.Proposals {
+		assignment := proposal.Assignment
+
+		fmt.Printf("\n  - %s.%s.%s\n", assignment.ResourceType, assignment.ResourceName, assignment.FullPath())
+
+		fmt.Printf("    File: %s\n", assignment.File)
+
+		fmt.Printf("    Detected change: %s\n", proposal.DetectedChange)
+
+		fmt.Printf("    Status: %s\n", proposal.Status)
+
+		if proposal.Verification != nil {
+			fmt.Printf("    Verification: %s\n", proposal.Verification.Reason)
+
+			if proposal.Verification.Risk != "" {
+				fmt.Printf("    Verification risk: %s\n", proposal.Verification.Risk)
+			}
+		}
+
+		if len(proposal.Candidates) == 0 {
+			fmt.Println("    Possible replacement: not found")
+
+			continue
+		}
+
+		for index, candidate := range proposal.Candidates {
+
+			fmt.Printf("\n    Candidate %d: %s\n", index+1, candidate.ToPath)
+
+			fmt.Printf("      Before type: %s\n", candidate.BeforeType)
+
+			fmt.Printf("      After type:  %s\n", candidate.AfterType)
+
+			fmt.Printf("      Transformations: %s\n", formatTransformations(candidate.Transformation))
+
+			fmt.Println("      Evidence:")
+
+			for _, evidence := range candidate.Evidence {
+
+				fmt.Printf("        - %s\n", evidence)
+			}
+		}
+	}
+}
+
+func formatTransformations(transformations []migration.TransformationKind) string {
+	values := make([]string, 0, len(transformations))
+
+	for _, transformation := range transformations {
+		values = append(values, string(transformation))
+	}
+
+	return strings.Join(values, ", ")
 }

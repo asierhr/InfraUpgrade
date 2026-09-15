@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/asierhr/infraupgrade/internal/migration"
 	"github.com/asierhr/infraupgrade/internal/scanner"
 	"github.com/asierhr/infraupgrade/internal/schemadiff"
 )
@@ -39,6 +40,8 @@ type Report struct {
 
 	AssignmentAnalysis          schemadiff.Report
 	AssignmentAnalysisAvailable bool
+
+	MigrationPlan migration.Plan
 }
 
 type stepDefinition struct {
@@ -167,6 +170,8 @@ func dryRun(ctx context.Context, projectRoot string, runner Runner, migrate work
 
 		report.AssignmentAnalysis = assigmentAnalysis
 		report.AssignmentAnalysisAvailable = true
+
+		report.MigrationPlan = migration.Build(assigmentAnalysis)
 	}
 
 	if report.Baseline.PlanAvailable && report.Upgraded.PlanAvailable {
