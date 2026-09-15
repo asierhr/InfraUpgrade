@@ -40,10 +40,105 @@ func TestVerifyMigrationPlanMarksEquivalentMigrationAsVerified(t *testing.T) {
 	if !strings.Contains(proposal.Verification.Reason, "terraform validate and plan passed") {
 		t.Fatalf("verification reason = %q", proposal.Verification.Reason)
 	}
+	if len(report.VerifiedMigrations) != 1 {
+		t.Fatalf("verified migrations = %#v; want one", report.VerifiedMigrations)
+	}
+	verified := report.VerifiedMigrations[0]
+	if verified.RelativePath != "main.tf" || verified.RuleID != "schema-derived" {
+		t.Fatalf("verified migration = %#v", verified)
+	}
+	if strings.Contains(string(verified.Content), "old_name") ||
+		!strings.Contains(string(verified.Content), `new_name = "value"`) {
+		t.Fatalf("verified migration content is incorrect:\n%s", verified.Content)
+	}
+	if report.Upgraded.Name != "migration-verification" || !report.Upgraded.Succeeded() {
+		t.Fatalf("effective upgraded execution = %#v", report.Upgraded)
+	}
+	if !report.ComparisonAvailable || report.Comparison.Risk() != "low" {
+		t.Fatalf("effective comparison = %#v", report.Comparison)
+	}
 
 	content := readCandidateProjectFile(t, project, "main.tf")
 	if strings.Contains(content, "new_name") || !strings.Contains(content, "old_name") {
 		t.Fatalf("original project was modified:\n%s", content)
+	}
+}
+
+func TestVerifyMigrationPlanCombinesCatalogAndInferredChanges(t *testing.T) {
+	project := migrationVerificationProject(t, `resource "example_resource" "example" {
+  old_name = "value"
+}
+`)
+	report := migrationVerificationReport(t)
+	report.AppliedMigrations = []AppliedMigration{{
+		RelativePath: "main.tf",
+		RuleID:       "catalog-rule",
+		Description:  "add catalog setting",
+		Content: []byte(`resource "example_resource" "example" {
+  old_name     = "value"
+  catalog_name = "catalog"
+}
+`),
+	}}
+
+	err := VerifyMigrationPlan(
+		context.Background(),
+		project,
+		&report,
+		&fakePlanRunner{},
+		migrationVerificationTargets(),
+	)
+	if err != nil {
+		t.Fatalf("VerifyMigrationPlan() error = %v", err)
+	}
+	if len(report.VerifiedMigrations) != 1 {
+		t.Fatalf("verified migrations = %#v; want one combined file", report.VerifiedMigrations)
+	}
+
+	content := string(report.VerifiedMigrations[0].Content)
+	for _, expected := range []string{`new_name`, `catalog_name = "catalog"`} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("combined migration does not contain %q:\n%s", expected, content)
+		}
+	}
+	if strings.Contains(content, "old_name") {
+		t.Fatalf("combined migration still contains old_name:\n%s", content)
+	}
+}
+
+func TestVerifyMigrationPlanDoesNotPersistRejectedChanges(t *testing.T) {
+	project := migrationVerificationProject(t, `resource "example_resource" "example" {
+  old_name = "value"
+}
+`)
+	report := migrationVerificationReport(t)
+	originalUpgraded := report.Upgraded
+
+	err := VerifyMigrationPlan(
+		context.Background(),
+		project,
+		&report,
+		&fakePlanRunner{differentPlan: true},
+		migrationVerificationTargets(),
+	)
+	if err != nil {
+		t.Fatalf("VerifyMigrationPlan() error = %v", err)
+	}
+	if len(report.VerifiedMigrations) != 0 {
+		t.Fatalf("rejected changes were persisted: %#v", report.VerifiedMigrations)
+	}
+	if report.Upgraded.Name != originalUpgraded.Name {
+		t.Fatalf("rejected verification replaced upgraded execution: %#v", report.Upgraded)
+	}
+}
+
+func TestApplyExistingMigrationsRejectsPathOutsideWorkspace(t *testing.T) {
+	err := applyExistingMigrations(t.TempDir(), []AppliedMigration{{
+		RelativePath: "../outside.tf",
+		Content:      []byte("content"),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "leaves verification workspace") {
+		t.Fatalf("applyExistingMigrations() error = %v; want traversal error", err)
 	}
 }
 

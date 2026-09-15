@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -48,19 +49,65 @@ func BuildLockfileChangeSet(report Report) (ChangeSet, error) {
 		},
 	}
 
-	for _, appliedMigration := range report.AppliedMigrations {
-		changeSet.Files = append(changeSet.Files, FileChange{
-			RelativePath: appliedMigration.RelativePath,
-			Kind:         ChangeTerraformMigration,
-			Content:      append([]byte(nil), appliedMigration.Content...),
-		})
+	migrationChanges, err := buildMigrationChanges(report.AppliedMigrations, report.VerifiedMigrations)
+
+	if err != nil {
+		return ChangeSet{}, err
 	}
+
+	changeSet.Files = append(changeSet.Files, migrationChanges...)
 
 	if err := ValidateChangeSet(changeSet); err != nil {
 		return ChangeSet{}, err
 	}
 
 	return changeSet, nil
+}
+
+func buildMigrationChanges(catalogMigrations []AppliedMigration, verifiedMigrations []AppliedMigration) ([]FileChange, error) {
+	verifiedPaths := make(map[string]bool)
+
+	for _, migration := range verifiedMigrations {
+		path := filepath.ToSlash(filepath.Clean(migration.RelativePath))
+
+		if verifiedPaths[path] {
+			return nil, fmt.Errorf("duplicate verified migration file: %s", path)
+		}
+
+		verifiedPaths[path] = true
+	}
+
+	var changes []FileChange
+
+	for _, applied := range catalogMigrations {
+		path := filepath.ToSlash(filepath.Clean(applied.RelativePath))
+
+		if verifiedPaths[path] {
+			continue
+		}
+
+		changes = append(changes, FileChange{
+			RelativePath: path,
+			Kind:         ChangeTerraformMigration,
+			Content:      append([]byte(nil), applied.Content...),
+		})
+	}
+
+	for _, verified := range verifiedMigrations {
+		path := filepath.ToSlash(filepath.Clean(verified.RelativePath))
+
+		changes = append(changes, FileChange{
+			RelativePath: path,
+			Kind:         ChangeTerraformMigration,
+			Content:      append([]byte(nil), verified.Content...),
+		})
+	}
+
+	sort.Slice(changes, func(i, j int) bool {
+		return changes[i].RelativePath < changes[j].RelativePath
+	})
+
+	return changes, nil
 }
 
 func BuildPrepareChangeSet(report Report, projectRoot string, declarations []ProviderDeclaration) (ChangeSet, error) {
@@ -77,7 +124,9 @@ func BuildPrepareChangeSet(report Report, projectRoot string, declarations []Pro
 	}
 
 	if declarationChange != nil {
-		changeSet.Files = append(changeSet.Files, *declarationChange)
+		if err := appendNonConflictingChange(&changeSet, *declarationChange); err != nil {
+			return ChangeSet{}, err
+		}
 	}
 
 	if err := ValidateChangeSet(changeSet); err != nil {
@@ -85,6 +134,28 @@ func BuildPrepareChangeSet(report Report, projectRoot string, declarations []Pro
 	}
 
 	return changeSet, nil
+}
+
+func appendNonConflictingChange(changeSet *ChangeSet, change FileChange) error {
+	newPath := filepath.ToSlash(filepath.Clean(change.RelativePath))
+
+	for _, existing := range changeSet.Files {
+		existingPath := filepath.ToSlash(filepath.Clean(existing.RelativePath))
+
+		if existingPath != newPath {
+			continue
+		}
+
+		if bytes.Equal(existing.Content, change.Content) {
+			return nil
+		}
+
+		return fmt.Errorf("changeset conflict on %s between %s and %s", newPath, existing.Kind, change.Kind)
+	}
+
+	changeSet.Files = append(changeSet.Files, change)
+
+	return nil
 }
 
 func ValidateChangeSet(changeSet ChangeSet) error {

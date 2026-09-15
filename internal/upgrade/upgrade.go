@@ -36,7 +36,9 @@ type Report struct {
 	Upgraded            ExecutionReport
 	Comparison          PlanComparison
 	ComparisonAvailable bool
-	AppliedMigrations   []AppliedMigration
+
+	AppliedMigrations  []AppliedMigration
+	VerifiedMigrations []AppliedMigration
 
 	AssignmentAnalysis          schemadiff.Report
 	AssignmentAnalysisAvailable bool

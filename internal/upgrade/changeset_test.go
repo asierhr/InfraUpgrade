@@ -91,6 +91,112 @@ func TestBuildLockfileChangeSetAddsAppliedMigrations(t *testing.T) {
 	}
 }
 
+func TestBuildLockfileChangeSetAddsVerifiedMigrations(t *testing.T) {
+	report := successfulReportForChangeSet()
+	report.Upgraded.LockFileChanged = true
+	report.Upgraded.LockFileContent = []byte("lock")
+	report.VerifiedMigrations = []AppliedMigration{
+		{RelativePath: "z.tf", RuleID: "z", Content: []byte("z content")},
+		{RelativePath: "a.tf", RuleID: "a", Content: []byte("a content")},
+	}
+
+	changeSet, err := BuildLockfileChangeSet(report)
+	if err != nil {
+		t.Fatalf("BuildLockfileChangeSet() error = %v", err)
+	}
+	if len(changeSet.Files) != 3 {
+		t.Fatalf("BuildLockfileChangeSet() files = %#v; want lock and two migrations", changeSet.Files)
+	}
+	if changeSet.Files[1].RelativePath != "a.tf" || changeSet.Files[2].RelativePath != "z.tf" {
+		t.Fatalf("migration changes are not sorted: %#v", changeSet.Files)
+	}
+	if changeSet.Files[1].Kind != ChangeTerraformMigration {
+		t.Fatalf("verified migration kind = %q", changeSet.Files[1].Kind)
+	}
+}
+
+func TestBuildLockfileChangeSetPrefersCombinedVerifiedContent(t *testing.T) {
+	report := successfulReportForChangeSet()
+	report.Upgraded.LockFileChanged = true
+	report.Upgraded.LockFileContent = []byte("lock")
+	report.AppliedMigrations = []AppliedMigration{{
+		RelativePath: "main.tf",
+		RuleID:       "catalog",
+		Content:      []byte("catalog content"),
+	}}
+	report.VerifiedMigrations = []AppliedMigration{{
+		RelativePath: "main.tf",
+		RuleID:       "schema-derived",
+		Content:      []byte("combined verified content"),
+	}}
+
+	changeSet, err := BuildLockfileChangeSet(report)
+	if err != nil {
+		t.Fatalf("BuildLockfileChangeSet() error = %v", err)
+	}
+	if len(changeSet.Files) != 2 {
+		t.Fatalf("BuildLockfileChangeSet() files = %#v; want one migration", changeSet.Files)
+	}
+	if got := string(changeSet.Files[1].Content); got != "combined verified content" {
+		t.Fatalf("migration content = %q; want combined verified content", got)
+	}
+}
+
+func TestBuildLockfileChangeSetRejectsDuplicateVerifiedFile(t *testing.T) {
+	report := successfulReportForChangeSet()
+	report.Upgraded.LockFileChanged = true
+	report.Upgraded.LockFileContent = []byte("lock")
+	report.VerifiedMigrations = []AppliedMigration{
+		{RelativePath: "main.tf", Content: []byte("first")},
+		{RelativePath: ".\\main.tf", Content: []byte("second")},
+	}
+
+	_, err := BuildLockfileChangeSet(report)
+	if err == nil || !strings.Contains(err.Error(), "duplicate verified migration file") {
+		t.Fatalf("BuildLockfileChangeSet() error = %v; want duplicate error", err)
+	}
+}
+
+func TestBuildPrepareChangeSetRejectsDeclarationMigrationConflict(t *testing.T) {
+	report := successfulReportForChangeSet()
+	report.Upgraded.LockFileChanged = true
+	report.Upgraded.LockFileContent = []byte("lock")
+	report.VerifiedMigrations = []AppliedMigration{{
+		RelativePath: "versions.tf",
+		RuleID:       "schema-derived",
+		Content:      []byte("locals {}\n"),
+	}}
+
+	_, err := BuildPrepareChangeSet(report, t.TempDir(), []ProviderDeclaration{{
+		Name:       "aws",
+		Source:     "hashicorp/aws",
+		Constraint: "~> 6.64.0",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "changeset conflict on versions.tf") {
+		t.Fatalf("BuildPrepareChangeSet() error = %v; want declaration conflict", err)
+	}
+}
+
+func TestAppendNonConflictingChangeIgnoresIdenticalContent(t *testing.T) {
+	changeSet := ChangeSet{Files: []FileChange{{
+		RelativePath: "main.tf",
+		Kind:         ChangeTerraformMigration,
+		Content:      []byte("same"),
+	}}}
+
+	err := appendNonConflictingChange(&changeSet, FileChange{
+		RelativePath: ".\\main.tf",
+		Kind:         ChangeProviderDeclaration,
+		Content:      []byte("same"),
+	})
+	if err != nil {
+		t.Fatalf("appendNonConflictingChange() error = %v", err)
+	}
+	if len(changeSet.Files) != 1 {
+		t.Fatalf("changeSet files = %#v; want identical change deduplicated", changeSet.Files)
+	}
+}
+
 func TestValidateChangeSet(t *testing.T) {
 	validLock := FileChange{RelativePath: ".terraform.lock.hcl", Kind: ChangeLockFile, Content: []byte("lock")}
 	tests := []struct {

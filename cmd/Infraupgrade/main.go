@@ -197,7 +197,7 @@ func main() {
 			}
 
 			printPrepareResult(prepareResult)
-			printAppliedMigrations(report.AppliedMigrations)
+			printAppliedMigrations(mergeAppliedMigrations(report.AppliedMigrations, report.VerifiedMigrations))
 		}
 
 	case "version":
@@ -683,6 +683,30 @@ func printAssignmentChanges(report upgrade.Report) {
 
 		fmt.Printf("    Expression: %s\n", assignment.Expression)
 	}
+}
+
+func mergeAppliedMigrations(catalog []upgrade.AppliedMigration, verified []upgrade.AppliedMigration) []upgrade.AppliedMigration {
+	verifiedPaths := make(map[string]bool)
+
+	for _, migration := range verified {
+		verifiedPaths[filepath.ToSlash(filepath.Clean(migration.RelativePath))] = true
+	}
+
+	result := make([]upgrade.AppliedMigration, 0, len(catalog)+len(verified))
+
+	for _, migration := range catalog {
+		path := filepath.ToSlash(filepath.Clean(migration.RelativePath))
+
+		if verifiedPaths[path] {
+			continue
+		}
+
+		result = append(result, migration)
+	}
+
+	result = append(result, verified...)
+
+	return result
 }
 
 func printMigrationPlan(report upgrade.Report) {

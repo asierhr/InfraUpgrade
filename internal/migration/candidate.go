@@ -30,6 +30,8 @@ func ApplyCandidate(projectRoot string, proposals []Proposal) ([]FileChange, err
 		files = append(files, file)
 	}
 
+	sort.Strings(files)
+
 	changes := make([]FileChange, 0, len(files))
 
 	for _, relativePath := range files {

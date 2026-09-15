@@ -371,3 +371,21 @@ func captureStdout(t *testing.T, action func()) string {
 	}
 	return string(content)
 }
+
+func TestMergeAppliedMigrationsPrefersVerifiedFile(t *testing.T) {
+	catalog := []upgrade.AppliedMigration{
+		{RelativePath: "main.tf", RuleID: "catalog-main"},
+		{RelativePath: "other.tf", RuleID: "catalog-other"},
+	}
+	verified := []upgrade.AppliedMigration{
+		{RelativePath: ".\\main.tf", RuleID: "schema-derived"},
+	}
+
+	result := mergeAppliedMigrations(catalog, verified)
+	if len(result) != 2 {
+		t.Fatalf("mergeAppliedMigrations() = %#v; want two migrations", result)
+	}
+	if result[0].RuleID != "catalog-other" || result[1].RuleID != "schema-derived" {
+		t.Fatalf("mergeAppliedMigrations() = %#v; verified file should replace catalog file", result)
+	}
+}

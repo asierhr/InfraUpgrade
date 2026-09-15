@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/asierhr/infraupgrade/internal/migration"
 )
@@ -32,13 +34,17 @@ func VerifyMigrationPlan(ctx context.Context, projectRoot string, report *Report
 		}
 	}()
 
+	if err := applyExistingMigrations(workspace, report.AppliedMigrations); err != nil {
+		return fmt.Errorf("prepare catalog migrations for verification: %w", err)
+	}
+
 	proposals := make([]migration.Proposal, 0, len(proposalIndexes))
 
 	for _, index := range proposalIndexes {
 		proposals = append(proposals, report.MigrationPlan.Proposals[index])
 	}
 
-	_, applyErr := migration.ApplyCandidate(workspace, proposals)
+	changes, applyErr := migration.ApplyCandidate(workspace, proposals)
 
 	if applyErr != nil {
 		rejectProposals(&report.MigrationPlan, proposalIndexes, fmt.Sprintf("candidate application failed: %v", applyErr), "")
@@ -100,6 +106,12 @@ func VerifyMigrationPlan(ctx context.Context, projectRoot string, report *Report
 		),
 		risk,
 	)
+
+	report.VerifiedMigrations = convertVerifiedMigrations(changes)
+
+	report.Upgraded = execution
+	report.Comparison = comparison
+	report.ComparisonAvailable = true
 
 	return nil
 }
@@ -172,4 +184,80 @@ func rejectProposals(plan *migration.Plan, indexes []int, reason string, risk st
 			Risk:   risk,
 		}
 	}
+}
+
+func convertVerifiedMigrations(changes []migration.FileChange) []AppliedMigration {
+	result := make([]AppliedMigration, 0, len(changes))
+
+	for _, change := range changes {
+		result = append(result, AppliedMigration{
+			RelativePath: change.RelativePath,
+			RuleID:       change.RuleID,
+			Description:  change.Description,
+			Content: append(
+				[]byte(nil),
+				change.Content...,
+			),
+		})
+	}
+	return result
+}
+
+func applyExistingMigrations(workspace string, migrations []AppliedMigration) error {
+	root, err := filepath.Abs(workspace)
+
+	if err != nil {
+		return fmt.Errorf("resolve verification workspace: %w", err)
+	}
+
+	for _, applied := range migrations {
+		path, err := resolveVerificationPath(root, applied.RelativePath)
+
+		if err != nil {
+			return err
+		}
+
+		info, err := os.Stat(path)
+
+		switch {
+		case err == nil:
+			if err := os.WriteFile(path, applied.Content, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("write catalog migration %s: %w", applied.RelativePath, err)
+			}
+
+		case os.IsNotExist(err):
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return fmt.Errorf("create migration directory: %w", err)
+			}
+
+			if err := os.WriteFile(path, applied.Content, 0o600); err != nil {
+				return fmt.Errorf("create catalog migration %s: %w", applied.RelativePath, err)
+			}
+
+		default:
+			return fmt.Errorf("inspect catalog migration %s: %w", applied.RelativePath, err)
+		}
+	}
+
+	return nil
+}
+
+func resolveVerificationPath(root string, relativePath string) (string, error) {
+	path, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(relativePath)))
+
+	if err != nil {
+		return "", fmt.Errorf("resolve migration path %s: %w", relativePath, err)
+	}
+
+	relative, err := filepath.Rel(root, path)
+
+	if err != nil {
+		return "", fmt.Errorf("validate migration path %s: %w", relativePath, err)
+	}
+
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("migration path leaves verification workspace: %s", relativePath)
+	}
+
+	return path, nil
 }
