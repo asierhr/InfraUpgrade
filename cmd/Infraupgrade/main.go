@@ -23,9 +23,16 @@ type upgradeOptions struct {
 	Mode upgradeMode
 }
 
+type publishOptions struct {
+	Path   string
+	Branch string
+	Remote string
+}
+
 const (
-	upgradeModeDryRun  upgradeMode = "dry-run"
-	upgradeModePrepare upgradeMode = "prepare"
+	upgradeModeDryRun      upgradeMode = "dry-run"
+	upgradeModePrepare     upgradeMode = "prepare"
+	upgradeModePullRequest upgradeMode = "pr"
 )
 
 func main() {
@@ -196,9 +203,68 @@ func main() {
 				os.Exit(1)
 			}
 
+			migrations := mergeAppliedMigrations(
+				report.AppliedMigrations,
+				report.VerifiedMigrations,
+			)
+
+			preparationInput := buildPreparationInput(
+				updates,
+				report,
+				decision,
+				commitMessage,
+				migrations,
+			)
+
+			preparationPath, err := gitprepare.SavePreparation(
+				upgradeContext,
+				prepareResult,
+				preparationInput,
+			)
+
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "save prepared upgrade: %v\n", err)
+
+				os.Exit(1)
+			}
+
 			printPrepareResult(prepareResult)
+
+			fmt.Printf("\nPreparation metadata: %s\n", preparationPath)
+
 			printAppliedMigrations(mergeAppliedMigrations(report.AppliedMigrations, report.VerifiedMigrations))
 		}
+
+	case "publish":
+		options, err := getPublishOptions(
+			os.Args[2:],
+		)
+
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			printUsage()
+			os.Exit(1)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+
+		defer cancel()
+
+		result, err := gitprepare.PublishPullRequest(
+			ctx,
+			options.Path,
+			options.Branch,
+			gitprepare.PublishOptions{
+				Remote: options.Remote,
+			},
+		)
+
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "publish prepared upgrade: %v\n", err)
+			os.Exit(1)
+		}
+
+		printPublishedPullRequest(result)
 
 	case "version":
 		fmt.Println("infraupgrade development")
@@ -218,6 +284,7 @@ func printUsage() {
 	fmt.Println("  infraupgrade outdated [path]")
 	fmt.Println("  infraupgrade upgrade [path] --dry-run")
 	fmt.Println("  infraupgrade upgrade [path] --prepare")
+	fmt.Println("  infraupgrade publish [path] --branch <branch> [--remote <remote>]")
 }
 
 func printScanResult(result scanner.Result) {
@@ -359,6 +426,12 @@ func getUpgradeOptions(args []string) (upgradeOptions, error) {
 			}
 
 			options.Mode = upgradeModePrepare
+		case argument == "--pr":
+			if options.Mode != "" {
+				return upgradeOptions{}, fmt.Errorf("upgrade accepts only one execution mode")
+			}
+
+			options.Mode = upgradeModePullRequest
 
 		case strings.HasPrefix(argument, "-"):
 			return upgradeOptions{}, fmt.Errorf("unknown upgrade option: %s", argument)
@@ -775,4 +848,168 @@ func formatTransformations(transformations []migration.TransformationKind) strin
 	}
 
 	return strings.Join(values, ", ")
+}
+
+func buildPreparationInput(updates []registry.UpgradeCandidate, report upgrade.Report, decision upgrade.UpgradeDecision, title string, migrations []upgrade.AppliedMigration) gitprepare.PreparationInput {
+	providers := make(
+		[]gitprepare.PreparedProvider,
+		0,
+		len(updates),
+	)
+
+	for _, candidate := range updates {
+		providers = append(providers, gitprepare.PreparedProvider{
+			Name:            candidate.Provider,
+			Source:          candidate.Source,
+			PreviousVersion: candidate.CurrentVersion,
+			TargetVersion:   candidate.TargetVersion,
+			ChangeType:      string(candidate.ChangeType),
+		})
+	}
+
+	actionDifferences := make([]gitprepare.PreparedActionDifference, 0, len(report.Comparison.Differences))
+
+	for _, difference := range report.Comparison.Differences {
+		actionDifferences = append(actionDifferences, gitprepare.PreparedActionDifference{
+			Address:        difference.Address,
+			BaselineAction: difference.BaselineAction,
+			UpgradedAction: difference.UpgradedAction,
+		})
+	}
+
+	attributeDifferences := make([]gitprepare.PreparedAttributeDifference, 0, len(report.Comparison.AttributeDifferences))
+
+	for _, difference := range report.Comparison.AttributeDifferences {
+		attributeDifferences = append(attributeDifferences, gitprepare.PreparedAttributeDifference{
+			Address:    difference.Address,
+			Phase:      difference.Phase,
+			Path:       difference.Path,
+			Kind:       difference.Kind,
+			SchemaOnly: difference.SchemaOnly,
+			Sensitive:  difference.Sensitive,
+		})
+	}
+
+	preparedMigrations := make([]gitprepare.PreparedMigration, 0, len(migrations))
+
+	for _, applied := range migrations {
+		preparedMigrations = append(preparedMigrations, gitprepare.PreparedMigration{
+			RuleID:       applied.RuleID,
+			RelativePath: applied.RelativePath,
+			Description:  applied.Description,
+		})
+	}
+
+	plan := report.Upgraded.Plan
+
+	return gitprepare.PreparationInput{
+		Providers: providers,
+
+		Plan: gitprepare.PreparedPlan{
+			Create:  plan.Create,
+			Update:  plan.Update,
+			Replace: plan.Replace,
+			Delete:  plan.Delete,
+			Read:    plan.Read,
+			NoOp:    plan.NoOp,
+			Unknown: plan.Unknown,
+		},
+
+		ActionDifferences:    actionDifferences,
+		AttributeDifferences: attributeDifferences,
+		Migrations:           preparedMigrations,
+
+		Validation: gitprepare.PreparedValidation{
+			StateContext: string(
+				decision.ValidationContext,
+			),
+			Recommendation: string(
+				decision.Recommendation,
+			),
+			Risk: report.Comparison.Risk(),
+
+			ActionDifferences: len(
+				actionDifferences,
+			),
+			AttributeDifferences: len(
+				attributeDifferences,
+			),
+		},
+
+		PullRequest: gitprepare.PreparedPullRequest{
+			Title: title,
+		},
+	}
+}
+
+func getPublishOptions(args []string) (publishOptions, error) {
+	options := publishOptions{
+		Path:   ".",
+		Remote: "origin",
+	}
+
+	pathSpecified := false
+
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+
+		switch {
+		case argument == "--branch":
+			if index+1 >= len(args) {
+				return publishOptions{}, fmt.Errorf("--branch requires a value")
+			}
+
+			index++
+			options.Branch = args[index]
+
+		case strings.HasPrefix(argument, "--branch="):
+			options.Branch = strings.TrimPrefix(argument, "--branch=")
+
+		case argument == "--remote":
+			if index+1 >= len(args) {
+				return publishOptions{}, fmt.Errorf("--remote requires a value")
+			}
+
+			index++
+			options.Remote = args[index]
+
+		case strings.HasPrefix(argument, "--remote="):
+			options.Remote = strings.TrimPrefix(argument, "--remote=")
+
+		case strings.HasPrefix(argument, "-"):
+			return publishOptions{}, fmt.Errorf("unknown publish option: %s", argument)
+
+		case pathSpecified:
+			return publishOptions{}, fmt.Errorf("publish accepts at most one path")
+
+		default:
+			options.Path = argument
+			pathSpecified = true
+		}
+	}
+
+	if strings.TrimSpace(options.Branch) == "" {
+		return publishOptions{}, fmt.Errorf("publish requires --branch")
+	}
+
+	if strings.TrimSpace(options.Remote) == "" {
+		return publishOptions{}, fmt.Errorf("publish remote cannot be empty")
+	}
+
+	return options, nil
+}
+
+func printPublishedPullRequest(result gitprepare.PullRequestResult) {
+	if result.AlreadyExisted {
+		fmt.Println("\nPull request already exists:")
+	} else {
+		fmt.Println("\nPull request created:")
+	}
+
+	fmt.Printf("  URL: %s\n", result.URL)
+	fmt.Printf("  Branch: %s\n", result.Branch)
+	fmt.Printf("  Base branch: %s\n", result.BaseBranch)
+	fmt.Printf("  Remote: %s\n", result.Remote)
+	fmt.Printf("  Commit: %s\n", result.Commit)
+	fmt.Printf("  Preparation: %s\n", result.PreparationPath)
 }

@@ -14,10 +14,13 @@ import (
 )
 
 type Result struct {
-	RepositoryRoot string
-	Branch         string
-	Commit         string
-	ChangedFiles   []string
+	RepositoryRoot     string
+	TerraformDirectory string
+	Branch             string
+	BaseBranch         string
+	BaseCommit         string
+	Commit             string
+	ChangedFiles       []string
 }
 
 func Prepare(ctx context.Context, projectRoot string, changeSet upgrade.ChangeSet, branch string, commitMessage string) (Result, error) {
@@ -39,6 +42,19 @@ func Prepare(ctx context.Context, projectRoot string, changeSet upgrade.ChangeSe
 	}
 
 	repositoryRoot := filepath.Clean(strings.TrimSpace(repositoryRootOutput))
+
+	baseCommitOutput, err := runGit(
+		ctx,
+		repositoryRoot,
+		"rev-parse",
+		"HEAD",
+	)
+
+	if err != nil {
+		return Result{}, fmt.Errorf("read base commit: %w", err)
+	}
+
+	baseCommit := strings.TrimSpace(baseCommitOutput)
 
 	relativeProject, err := filepath.Rel(repositoryRoot, absoluteProject)
 
@@ -63,6 +79,21 @@ func Prepare(ctx context.Context, projectRoot string, changeSet upgrade.ChangeSe
 	if err != nil {
 		return Result{}, fmt.Errorf("create prepare directory: %w", err)
 	}
+
+	baseBranchOutput, err := runGit(
+		ctx,
+		repositoryRoot,
+		"symbolic-ref",
+		"--quiet",
+		"--short",
+		"HEAD",
+	)
+
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve base branch: %w", err)
+	}
+
+	baseBranch := strings.TrimSpace(baseBranchOutput)
 
 	worktree := filepath.Join(temporaryRoot, "worktree")
 
@@ -122,10 +153,13 @@ func Prepare(ctx context.Context, projectRoot string, changeSet upgrade.ChangeSe
 	}
 
 	return Result{
-		RepositoryRoot: repositoryRoot,
-		Branch:         branch,
-		Commit:         strings.TrimSpace(commitOutput),
-		ChangedFiles:   changedFiles,
+		RepositoryRoot:     repositoryRoot,
+		TerraformDirectory: filepath.ToSlash(relativeProject),
+		Branch:             branch,
+		BaseBranch:         baseBranch,
+		BaseCommit:         baseCommit,
+		Commit:             strings.TrimSpace(commitOutput),
+		ChangedFiles:       changedFiles,
 	}, nil
 }
 

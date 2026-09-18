@@ -31,6 +31,18 @@ func TestPrepareCreatesLocalBranchAndCommit(t *testing.T) {
 	if result.RepositoryRoot != filepath.Clean(repository) || result.Branch != "infraupgrade/aws-6.64.0" || result.Commit == "" {
 		t.Fatalf("Prepare() = %#v", result)
 	}
+	if result.TerraformDirectory != "Terraform" {
+		t.Fatalf("Prepare() TerraformDirectory = %q; want Terraform", result.TerraformDirectory)
+	}
+	if result.BaseBranch != "main" {
+		t.Fatalf("Prepare() BaseBranch = %q; want main", result.BaseBranch)
+	}
+	if result.BaseCommit == "" || result.BaseCommit == result.Commit {
+		t.Fatalf("Prepare() commits = base %q, prepared %q", result.BaseCommit, result.Commit)
+	}
+	if parent := strings.TrimSpace(gitTest(t, repository, "rev-parse", result.Commit+"^")); parent != result.BaseCommit {
+		t.Fatalf("prepared parent = %q; want %q", parent, result.BaseCommit)
+	}
 	wantFiles := []string{"Terraform/.terraform.lock.hcl", "Terraform/versions.tf"}
 	if !reflect.DeepEqual(result.ChangedFiles, wantFiles) {
 		t.Fatalf("Prepare() changed files = %v; want %v", result.ChangedFiles, wantFiles)

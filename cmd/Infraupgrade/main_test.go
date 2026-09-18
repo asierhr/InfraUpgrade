@@ -42,6 +42,7 @@ func TestGetUpgradeOptions(t *testing.T) {
 		{name: "default path", args: []string{"--dry-run"}, wantPath: ".", wantMode: upgradeModeDryRun},
 		{name: "path before flag", args: []string{"project", "--dry-run"}, wantPath: "project", wantMode: upgradeModeDryRun},
 		{name: "flag before path", args: []string{"--prepare", "project"}, wantPath: "project", wantMode: upgradeModePrepare},
+		{name: "pull request mode", args: []string{"--pr", "project"}, wantPath: "project", wantMode: upgradeModePullRequest},
 		{name: "missing dry run", args: []string{"project"}, wantError: true},
 		{name: "unknown option", args: []string{"--apply"}, wantError: true},
 		{name: "two paths", args: []string{"one", "two", "--dry-run"}, wantError: true},
@@ -133,6 +134,7 @@ func TestPrintUsageListsEveryCommand(t *testing.T) {
 		"  infraupgrade outdated [path]",
 		"  infraupgrade upgrade [path] --dry-run",
 		"  infraupgrade upgrade [path] --prepare",
+		"  infraupgrade publish [path] --branch <branch> [--remote <remote>]",
 		"  infraupgrade version",
 	} {
 		if !strings.Contains(output, usageLine) {
@@ -387,5 +389,115 @@ func TestMergeAppliedMigrationsPrefersVerifiedFile(t *testing.T) {
 	}
 	if result[0].RuleID != "catalog-other" || result[1].RuleID != "schema-derived" {
 		t.Fatalf("mergeAppliedMigrations() = %#v; verified file should replace catalog file", result)
+	}
+}
+
+func TestGetPublishOptions(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		want      publishOptions
+		wantError string
+	}{
+		{
+			name: "defaults",
+			args: []string{"--branch", "infraupgrade/aws-6.64.0"},
+			want: publishOptions{Path: ".", Branch: "infraupgrade/aws-6.64.0", Remote: "origin"},
+		},
+		{
+			name: "explicit values",
+			args: []string{"Terraform", "--branch=infraupgrade/aws-6.64.0", "--remote", "upstream"},
+			want: publishOptions{Path: "Terraform", Branch: "infraupgrade/aws-6.64.0", Remote: "upstream"},
+		},
+		{name: "missing branch", args: []string{"Terraform"}, wantError: "requires --branch"},
+		{name: "branch value", args: []string{"--branch"}, wantError: "requires a value"},
+		{name: "remote value", args: []string{"--branch=x", "--remote"}, wantError: "requires a value"},
+		{name: "empty remote", args: []string{"--branch=x", "--remote="}, wantError: "cannot be empty"},
+		{name: "unknown", args: []string{"--branch=x", "--draft"}, wantError: "unknown publish option"},
+		{name: "two paths", args: []string{"one", "two", "--branch=x"}, wantError: "at most one path"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := getPublishOptions(test.args)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("getPublishOptions() = %#v, %v; want error containing %q", got, err, test.wantError)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("getPublishOptions() = %#v, %v; want %#v", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildPreparationInputCopiesUpgradeReport(t *testing.T) {
+	updates := []registry.UpgradeCandidate{{
+		Provider: "aws", Source: "hashicorp/aws", CurrentVersion: "6.40.0", TargetVersion: "6.64.0", ChangeType: "minor",
+	}}
+	report := upgrade.Report{
+		Upgraded: upgrade.ExecutionReport{Plan: upgrade.PlanSummary{
+			Create: 1, Update: 2, Replace: 3, Delete: 4, Read: 5, NoOp: 6, Unknown: 7,
+		}},
+		Comparison: upgrade.PlanComparison{
+			Differences: []upgrade.ActionDifference{{
+				Address: "aws_instance.web", BaselineAction: "update", UpgradedAction: "replace",
+			}},
+			AttributeDifferences: []upgrade.AttributeDifference{{
+				Address: "aws_route.example", Phase: "after", Path: "new_field", Kind: upgrade.AttributeAdded, SchemaOnly: true, Sensitive: true,
+			}},
+		},
+	}
+	decision := upgrade.UpgradeDecision{
+		Recommendation:    upgrade.RecommendationManualReview,
+		ValidationContext: upgrade.StateContextExisting,
+	}
+	migrations := []upgrade.AppliedMigration{{
+		RuleID: "schema-derived", RelativePath: "main.tf", Description: "rename field",
+	}}
+
+	input := buildPreparationInput(updates, report, decision, "upgrade aws", migrations)
+	if len(input.Providers) != 1 || input.Providers[0].TargetVersion != "6.64.0" {
+		t.Fatalf("providers = %#v", input.Providers)
+	}
+	wantPlan := gitprepare.PreparedPlan{Create: 1, Update: 2, Replace: 3, Delete: 4, Read: 5, NoOp: 6, Unknown: 7}
+	if input.Plan != wantPlan {
+		t.Fatalf("plan = %#v; want %#v", input.Plan, wantPlan)
+	}
+	if len(input.ActionDifferences) != 1 || input.ActionDifferences[0].UpgradedAction != "replace" {
+		t.Fatalf("action differences = %#v", input.ActionDifferences)
+	}
+	if len(input.AttributeDifferences) != 1 || !input.AttributeDifferences[0].SchemaOnly || !input.AttributeDifferences[0].Sensitive {
+		t.Fatalf("attribute differences = %#v", input.AttributeDifferences)
+	}
+	if len(input.Migrations) != 1 || input.Migrations[0].RuleID != "schema-derived" {
+		t.Fatalf("migrations = %#v", input.Migrations)
+	}
+	if input.Validation.Risk != "high" || input.Validation.ActionDifferences != 1 || input.Validation.AttributeDifferences != 1 {
+		t.Fatalf("validation = %#v", input.Validation)
+	}
+	if input.PullRequest.Title != "upgrade aws" {
+		t.Fatalf("pull request = %#v", input.PullRequest)
+	}
+}
+
+func TestPrintPublishedPullRequest(t *testing.T) {
+	result := gitprepare.PullRequestResult{
+		URL: "https://github.com/example/repository/pull/42", Branch: "infraupgrade/aws", BaseBranch: "main",
+		Remote: "origin", Commit: "abc123", PreparationPath: `C:\repo\.git\infraupgrade\preparations\abc123.json`,
+	}
+	output := captureStdout(t, func() { printPublishedPullRequest(result) })
+	for _, expected := range []string{"Pull request created:", result.URL, result.Branch, "Base branch: main", "Remote: origin", "Commit: abc123", result.PreparationPath} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("published PR output does not contain %q:\n%s", expected, output)
+		}
+	}
+
+	result.AlreadyExisted = true
+	output = captureStdout(t, func() { printPublishedPullRequest(result) })
+	if !strings.Contains(output, "Pull request already exists:") {
+		t.Fatalf("existing PR output = %q", output)
 	}
 }
